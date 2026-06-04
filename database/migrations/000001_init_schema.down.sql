@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS wch_transactions;
+DROP TABLE IF EXISTS system_logs;
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS users;
+DROP EXTENSION IF EXISTS "uuid-ossp";

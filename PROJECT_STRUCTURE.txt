@@ -1,0 +1,16 @@
+NAFAS/
+├── backend/
+│   ├── api/
+│   ├── scanner/
+│   ├── trader/
+│   ├── risk/
+│   ├── exchange/
+│   └── notification/
+├── frontend/
+│   ├── onboarding/
+│   ├── exchange-setup/
+│   └── billing/
+├── telegram-bot/
+├── database/
+├── docs/
+└── deployment/

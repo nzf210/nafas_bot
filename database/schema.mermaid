@@ -1,0 +1,108 @@
+erDiagram
+    users {
+        UUID id PK
+        BIGINT telegram_id UK
+        VARCHAR username
+        DECIMAL wch_balance
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    api_keys {
+        UUID id PK
+        UUID user_id FK
+        VARCHAR exchange
+        TEXT encrypted_key
+        TEXT encrypted_secret
+        BOOLEAN is_active
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    user_configs {
+        UUID id PK
+        UUID user_id FK
+        DECIMAL max_risk_per_trade
+        DECIMAL daily_loss_limit
+        INTEGER max_open_positions
+        BOOLEAN notify_on_trade
+        BOOLEAN notify_on_error
+        TIME daily_report_time
+        TEXT_ARRAY preferred_pairs
+        BOOLEAN auto_trade_enabled
+        JSONB metadata
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    wch_transactions {
+        UUID id PK
+        UUID user_id FK
+        DECIMAL amount
+        VARCHAR transaction_type
+        VARCHAR status
+        VARCHAR tx_hash
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    system_logs {
+        UUID id PK
+        UUID user_id FK
+        VARCHAR level
+        VARCHAR module
+        TEXT message
+        JSONB metadata
+        TIMESTAMP created_at
+    }
+
+    ai_strategies {
+        UUID id PK
+        VARCHAR name
+        TEXT description
+        JSONB parameters
+        BOOLEAN is_active
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    ai_lessons {
+        UUID id PK
+        VARCHAR topic
+        TEXT lesson_learned
+        JSONB metrics
+        UUID applied_to_strategy FK
+        TIMESTAMP created_at
+    }
+
+    ai_signal_weights {
+        UUID id PK
+        VARCHAR signal_name
+        DECIMAL weight
+        JSONB context
+        TIMESTAMP updated_at
+    }
+
+    ai_decision_logs {
+        UUID id PK
+        VARCHAR trade_pair
+        VARCHAR decision
+        DECIMAL confidence_score
+        TEXT reasoning
+        JSONB context_data
+        TIMESTAMP created_at
+    }
+
+    pool_memories {
+        UUID id PK
+        VARCHAR pool_address
+        VARCHAR chain
+        JSONB memory_data
+        TIMESTAMP last_analyzed_at
+    }
+
+    users ||--o{ api_keys : has
+    users ||--|| user_configs : configures
+    users ||--o{ wch_transactions : makes
+    users ||--o{ system_logs : triggers
+    ai_strategies ||--o{ ai_lessons : improves
