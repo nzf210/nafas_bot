@@ -899,14 +899,14 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 	if exchange == "okx" {
 		if len(parts) < 4 {
 			return "" +
-				"*🔐 Set API Key — Error*\n\n" +
+				"🔐 Set API Key — Error\n\n" +
 				"OKX requires passphrase. Gunakan format:\n" +
 				"/setapikey okx <api_key> <api_secret> <passphrase>", nil
 		}
 		passphrase = parts[3]
 	} else if exchange != "binance" {
 		return "" +
-			"*🔐 Set API Key — Error*\n\n" +
+			"🔐 Set API Key — Error\n\n" +
 			"Exchange tidak dikenal. Gunakan:\n" +
 			"• binance\n" +
 			"• okx", nil
