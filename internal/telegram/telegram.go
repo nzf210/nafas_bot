@@ -598,6 +598,7 @@ Butuh bantuan? Hubungi admin.`, nil
 //   - error: error jika query gagal
 func (b *Bot) handleDashboard(ctx context.Context, user *models.User, args string) (string, error) {
 	autoTrade := "❌ Disabled"
+	apiKeySet := false
 	if b.db != nil {
 		var config models.UserConfig
 		err := b.db.QueryRowContext(ctx, `
@@ -606,19 +607,28 @@ func (b *Bot) handleDashboard(ctx context.Context, user *models.User, args strin
 		if err == nil && config.AutoTradeEnabled {
 			autoTrade = "✅ Enabled"
 		}
+
+		var count int
+		err = b.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM api_keys WHERE user_id = $1", user.ID).Scan(&count)
+		if err == nil && count > 0 {
+			apiKeySet = true
+		}
 	}
 
-	return fmt.Sprintf(`*📊 NAFAS Dashboard*
+	balanceText := ""
+	if apiKeySet {
+		balanceText = "\n• Exchange Balance: $0.00"
+	}
 
-*User:* %s
-*Status:* 🟢 Active
-*Auto Trade:* %s
-*WCH Balance:* %s
+	return fmt.Sprintf(`User: %s
+Status: 🟢 Active
+Auto Trade: %s
+WCH Balance: %s
 
-*System:*
+System:
 • Scanner: ✅ Running
 • AI: ✅ Online
-• Risk Guardian: ✅ Active`, firstNameOrUsername(user), autoTrade, user.WCHBalance.String()), nil
+• Risk Guardian: ✅ Active%s`, firstNameOrUsername(user), autoTrade, user.WCHBalance.String(), balanceText), nil
 }
 
 // handlePortfolio handles /portfolio command
