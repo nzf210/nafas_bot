@@ -2,48 +2,117 @@
 
 Roadmap ini menyatukan persepsi kita dari Hari ke-1 hingga sistem berjalan di Production. Kita membangun *Modular Monolith* (rekomendasi: Golang) dengan arsitektur *Multi-Agent AI* dan antarmuka Telegram.
 
-## Fase 1: Fondasi & Infrastruktur (Minggu 1) [IN PROGRESS]
+## Fase 1: Fondasi & Infrastruktur (Minggu 1) [DONE]
 **Tujuan:** Menyiapkan kerangka kerja dasar, database, dan struktur proyek.
 *   **[DONE] Hari 1-2:** Inisialisasi proyek, konfigurasi environment (Docker Compose, `.env`), setup struktur direktori (modular monolith: `internal/auth`, `internal/db`, dll).
 *   **[DONE] Hari 3-4:** Setup PostgreSQL schema dasar (tabel user, API keys terenkripsi, log sistem, wch token utility).
 *   **[DONE] Hari 5:** Setup Message Broker (Redis/NATS) untuk komunikasi internal asinkron (misal: webhook Telegram ke bot processor).
-*   **[TODO] Hari 6-7:** Setup framework logging terpusat dan penanganan error (sangat krusial untuk trading bot).
+*   **[DONE] Hari 6-7:** Setup framework logging terpusat dan penanganan error (sangat krusial untuk trading bot).
 
-## Fase 2: Integrasi Exchange & Data (Minggu 2) [TODO]
+### Progress V1.0 Implementation
+*   **[DONE]** Buat struktur direktori `internal/` lengkap (config, database, models, repository, logger, auth, user, exchange, scanner, strategy, risk, execution, ai, learning, telegram)
+*   **[DONE]** Implementasi models untuk semua 17 tabel database V1.0
+*   **[DONE]** Implementasi config loader dari environment variables
+*   **[DONE]** Implementasi database connection dan transaction wrapper
+*   **[DONE]** Implementasi logger terstruktur (JSON output)
+*   **[DONE]** Implementasi Telegram bot dengan command handlers (/start, /help, /dashboard, /portfolio, /settings, /status, /positions)
+*   **[DONE]** Implementasi Risk Guardian (hardcoded rules)
+*   **[DONE]** Implementasi AI Coordinator dengan LLM integration
+*   **[DONE]** Implementasi Exchange wrapper (Binance)
+*   **[DONE]** Implementasi Scanner untuk market data ingestion
+*   **[DONE]** Implementasi Strategy Engine
+*   **[DONE]** Implementasi Learning Engine untuk AI memory
+*   **[DONE]** Update main.go sebagai entry point dengan semua services terintegrasi
+
+## Fase 2: Integrasi Exchange & Data (Minggu 2) [DONE]
 **Tujuan:** Sistem bisa membaca data pasar dan saldo akun tanpa melakukan trading.
 *   **Hari 8-10:** Integrasi API Exchange (Binance/Bybit). Buat wrapper/interface yang seragam. Implementasi autentikasi API Key terenkripsi AES-256.
 *   **Hari 11-12:** Modul Scanner (Data Ingestion). Mengambil data OHLCV, orderbook, dan ticker untuk BTC, ETH, SOL.
 *   **Hari 13-14:** Sistem penyimpanan data market ke Postgres (untuk keperluan history & analisis AI) dan Redis (untuk data real-time).
 
-## Fase 3: Antarmuka Telegram (Minggu 3) [TODO]
+### Progress V1.0 Implementation
+*   **[DONE]** Exchange interface dengan GetCandles, GetTicker, GetPrice, GetBalances, PlaceOrder
+*   **[DONE]** Binance client dengan semua API endpoints (klines, account, order)
+*   **[DONE]** Scanner module yang menggunakan exchange interface
+*   **[DONE]** AES-256-GCM encryption utilities untuk API keys (auth/encryption.go)
+*   **[DONE]** MarketRepository untuk market_candles, market_snapshots, signal_history
+*   **[DONE]** UserRepository untuk users, user_configs, api_keys, asset_inventory
+*   **[DONE]** Execution module dengan Market, Limit, TWAP order execution
+
+## Fase 3: Antarmuka Telegram (Minggu 3) [DONE]
 **Tujuan:** Interaksi dengan user sudah bisa dilakukan sepenuhnya via Telegram.
 *   **Hari 15-16:** Setup Telegram Bot API (long polling atau webhook).
 *   **Hari 17-18:** Implementasi command dasar: `/dashboard` (status bot), `/portfolio` (saldo dari exchange).
 *   **Hari 19-21:** Implementasi command manajemen: `/settings` (update API key, set risk tolerance), `/positions` (posisi aktif).
 
-## Fase 4: Kerangka Kerja AI (Minggu 4 - 5) [TODO]
+### Progress V1.0 Implementation
+*   **[DONE]** Telegram bot dengan BotConfig untuk full dependencies
+*   **[DONE]** /dashboard command dengan auto-trade status dari database
+*   **[DONE]** /portfolio command dengan asset inventory dari database
+*   **[DONE]** /settings command dengan user config dari database
+*   **[DONE]** /status command dengan database dan exchange connectivity check
+*   **[DONE]** /positions command dengan open orders dari database
+*   **[DONE]** /balance command dengan real exchange balance (encrypted API key)
+*   **[DONE]** /setapikey command placeholder
+*   **[DONE]** API endpoints untuk market data dan balance
+
+## Fase 4: Kerangka Kerja AI (Minggu 4 - 5) [DONE]
 **Tujuan:** Menghidupkan agen-agen AI dan merajut komunikasinya tanpa eksekusi real.
 *   **Hari 22-24:** Integrasi LLM API (OpenAI/Anthropic) dan setup prompt/system message untuk masing-masing agen. Memastikan output selalu dalam format JSON.
 *   **Hari 25-27:** Implementasi **AI Coordinator** (Orchestrator utama) & **Market Analyst** (menentukan bull/bear/crab).
 *   **Hari 28-30:** Implementasi **Pair Analyst** (mencari setup trading) & **Trade Reviewer** (validasi logika setup).
 *   **Hari 31-35:** Testing komunikasi antar agen (Coordinator -> Market -> Pair -> Reviewer) dengan data dummy.
 
-## Fase 5: Mesin Risiko & Pembelajaran (Minggu 6) [TODO]
+### Progress V1.0 Implementation
+*   **[DONE]** AI Coordinator (`ai/coordinator.md`) dengan full system prompt
+*   **[DONE]** Market Analyst prompt (`ai/market_analyst.md`) untuk regime detection
+*   **[DONE]** Pair Analyst prompt (`ai/pair_analyst.md`) untuk setup ranking
+*   **[DONE]** Risk Guardian prompt (`ai/risk_guardian.md`) - hardcoded rules documentation
+*   **[DONE]** Trade Reviewer prompt (`ai/trade_reviewer.md`) untuk validasi trade logic
+*   **[DONE]** Execution Advisor prompt (`ai/execution_advisor.md`) untuk order execution
+*   **[DONE]** Learning Engine prompt (`ai/learning_engine.md`) untuk pattern recognition
+*   **[DONE]** AI Coordinator Go module dengan LLM integration
+
+## Fase 5: Mesin Risiko & Pembelajaran (Minggu 6) [DONE]
 **Tujuan:** Menambahkan lapis pengamanan utama dan memori AI.
 *   **Hari 36-39:** Implementasi **Risk Guardian**. Ini adalah kode *hardcoded* (bukan hanya AI prompt) yang mengecek max exposure, wajib ada stop-loss, dan ukuran posisi (position sizing).
 *   **Hari 40-42:** Desain tabel `trade_memories` dan `market_memories`. Implementasi awal **Learning Engine** untuk menyimpan log hasil keputusan agen.
 
-## Fase 6: Eksekusi & Paper Trading (Minggu 7 - 8) [TODO]
+### Progress V1.0 Implementation
+*   **[DONE]** Risk Guardian Go module (hardcoded rules, non-AI)
+*   **[DONE]** CheckTrade function dengan hardcoded rules
+*   **[DONE]** CheckMaxPositionSize function
+*   **[DONE]** CalculatePositionSize function
+*   **[DONE]** Learning Engine Go module
+*   **[DONE]** StoreMemory, RecallMemories, LogDecision, LogFeedback functions
+*   **[DONE]** GenerateDailyReport function
+
+## Fase 6: Eksekusi & Paper Trading (Minggu 7 - 8) [IN PROGRESS]
 **Tujuan:** Menjalankan pipeline lengkap namun tanpa uang beneran (atau via Testnet).
 *   **Hari 43-45:** Implementasi **Execution Advisor** (mengubah setup menjadi order API: Market/Limit/TWAP).
 *   **Hari 46-50:** Menghubungkan seluruh pipeline: *Scanner -> AI -> Risk -> Execution*. Menjalankan bot di mode **Paper Trading** (Testnet Exchange).
 *   **Hari 51-56:** Observasi Paper Trading. Evaluasi kualitas JSON dari AI, perbaiki prompt, pastikan Risk Guardian berhasil memblokir trade bodoh.
+
+### Progress V1.0 Implementation
+*   **[DONE]** Execution module dengan Market, Limit, TWAP order types
+*   **[DONE]** ExecuteMarket, ExecuteLimit, ExecuteTWAP functions
+*   **[DONE]** MonitorOrder function untuk tracking order status
+*   **[DONE]** Pipeline integration di main.go
+*   **[IN PROGRESS]** Paper trading mode configuration
 
 ## Fase 7: Persiapan Produksi & Live (Minggu 9) [TODO]
 **Tujuan:** Memastikan keamanan, stabilitas, dan peluncuran V0.1.0.
 *   **Hari 57-58:** Audit Keamanan. Cek enkripsi API key, validasi input Telegram, pastikan tidak ada secret bocor di log.
 *   **Hari 59:** Setup VPS Production (contoh: DigitalOcean/AWS). Deploy via Docker Compose.
 *   **Hari 60 (D-Day):** **Go Live**. Hubungkan API Key akun real (dengan dana kecil/sandbox limit dulu).
+
+### Progress V1.0 Implementation
+*   **[DONE]** AES-256-GCM encryption untuk API keys
+*   **[DONE]** No plaintext secrets in logs
+*   **[DONE]** Database SSL connection support
+*   **[TODO]** Security audit checklist
+*   **[TODO]** Docker Compose production setup
+*   **[TODO]** VPS deployment configuration
 
 ---
 

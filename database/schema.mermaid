@@ -3,6 +3,9 @@ erDiagram
         UUID id PK
         BIGINT telegram_id UK
         VARCHAR username
+        VARCHAR first_name
+        VARCHAR last_name
+        VARCHAR status
         DECIMAL wch_balance
         TIMESTAMP created_at
         TIMESTAMP updated_at
@@ -12,27 +15,241 @@ erDiagram
         UUID id PK
         UUID user_id FK
         VARCHAR exchange
-        TEXT encrypted_key
-        TEXT encrypted_secret
+        TEXT encrypted_api_key
+        TEXT encrypted_api_secret
+        TEXT encrypted_passphrase
         BOOLEAN is_active
         TIMESTAMP created_at
         TIMESTAMP updated_at
     }
 
-    user_configs {
+    exchange_accounts {
         UUID id PK
         UUID user_id FK
+        VARCHAR exchange
+        VARCHAR account_type
+        BOOLEAN is_active
+        TIMESTAMP last_sync_at
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    system_settings {
+        VARCHAR key PK
+        JSONB value
+        TIMESTAMP updated_at
+    }
+
+    user_configs {
+        UUID id PK
+        UUID user_id FK UK
         DECIMAL max_risk_per_trade
         DECIMAL daily_loss_limit
         INTEGER max_open_positions
         BOOLEAN notify_on_trade
         BOOLEAN notify_on_error
         TIME daily_report_time
-        TEXT_ARRAY preferred_pairs
         BOOLEAN auto_trade_enabled
-        JSONB metadata
         TIMESTAMP created_at
         TIMESTAMP updated_at
+    }
+
+    trading_pairs {
+        UUID id PK
+        UUID user_id FK
+        VARCHAR symbol
+        VARCHAR base_asset
+        VARCHAR quote_asset
+        INTEGER priority
+        BOOLEAN enabled
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    asset_targets {
+        UUID id PK
+        UUID user_id FK
+        VARCHAR asset
+        DECIMAL target_amount
+        DECIMAL current_amount
+        INTEGER priority
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    market_candles {
+        UUID id PK
+        VARCHAR symbol
+        VARCHAR interval
+        DECIMAL open
+        DECIMAL high
+        DECIMAL low
+        DECIMAL close
+        DECIMAL volume
+        TIMESTAMP candle_time
+        TIMESTAMP created_at
+    }
+
+    market_snapshots {
+        UUID id PK
+        VARCHAR symbol UK
+        DECIMAL last_price
+        DECIMAL volume_24h
+        TIMESTAMP timestamp
+    }
+
+    signal_history {
+        UUID id PK
+        VARCHAR symbol
+        DECIMAL rsi
+        DECIMAL macd
+        DECIMAL volume_score
+        DECIMAL trend_score
+        DECIMAL momentum_score
+        DECIMAL signal_strength
+        TIMESTAMP created_at
+    }
+
+    strategies {
+        UUID id PK
+        VARCHAR name
+        TEXT description
+        JSONB parameters
+        BOOLEAN enabled
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    strategy_runs {
+        UUID id PK
+        UUID strategy_id FK
+        VARCHAR symbol
+        VARCHAR decision_source
+        VARCHAR status
+        TIMESTAMP started_at
+        TIMESTAMP completed_at
+        TIMESTAMP created_at
+    }
+
+    orders {
+        UUID id PK
+        UUID user_id FK
+        VARCHAR exchange
+        VARCHAR symbol
+        VARCHAR side
+        VARCHAR order_type
+        DECIMAL price
+        DECIMAL quantity
+        DECIMAL executed_quantity
+        VARCHAR status
+        VARCHAR exchange_order_id
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    trade_executions {
+        UUID id PK
+        UUID order_id FK
+        DECIMAL price
+        DECIMAL quantity
+        DECIMAL fee
+        VARCHAR fee_asset
+        TIMESTAMP executed_at
+    }
+
+    asset_inventory {
+        UUID id PK
+        UUID user_id FK
+        VARCHAR asset
+        DECIMAL balance
+        DECIMAL locked_balance
+        DECIMAL btc_equivalent
+        TIMESTAMP updated_at
+    }
+
+    btc_treasury_snapshots {
+        UUID id PK
+        UUID user_id FK
+        DECIMAL btc_balance
+        DECIMAL btc_locked
+        DECIMAL btc_total
+        DECIMAL usd_value
+        TIMESTAMP snapshot_time
+    }
+
+    btc_accumulation_ledger {
+        UUID id PK
+        UUID user_id FK
+        VARCHAR source
+        VARCHAR asset
+        DECIMAL amount_asset
+        DECIMAL btc_received
+        DECIMAL fee_btc
+        TIMESTAMP created_at
+    }
+
+    btc_accumulation_metrics {
+        UUID id PK
+        UUID user_id FK
+        VARCHAR period
+        DECIMAL starting_btc
+        DECIMAL ending_btc
+        DECIMAL btc_growth
+        DECIMAL growth_percent
+        TIMESTAMP created_at
+    }
+
+    ai_providers {
+        UUID id PK
+        VARCHAR name
+        VARCHAR provider
+        VARCHAR model
+        TEXT encrypted_api_key
+        BOOLEAN is_active
+        TIMESTAMP created_at
+        TIMESTAMP updated_at
+    }
+
+    ai_prompt_versions {
+        UUID id PK
+        VARCHAR name
+        VARCHAR version
+        TEXT system_prompt
+        BOOLEAN is_active
+        TIMESTAMP created_at
+    }
+
+    ai_decisions {
+        UUID id PK
+        UUID strategy_run_id FK
+        UUID provider_id FK
+        VARCHAR symbol
+        VARCHAR decision
+        DECIMAL confidence
+        TEXT reasoning
+        VARCHAR prompt_version
+        JSONB input_context
+        JSONB output_context
+        TIMESTAMP created_at
+    }
+
+    ai_feedback {
+        UUID id PK
+        UUID decision_id FK
+        DECIMAL btc_before
+        DECIMAL btc_after
+        DECIMAL btc_delta
+        BOOLEAN success
+        TIMESTAMP created_at
+    }
+
+    ai_memory {
+        UUID id PK
+        VARCHAR memory_type
+        TEXT content
+        DECIMAL importance_score
+        JSONB metadata
+        TIMESTAMP created_at
     }
 
     wch_transactions {
@@ -56,53 +273,46 @@ erDiagram
         TIMESTAMP created_at
     }
 
-    ai_strategies {
+    daily_reports {
         UUID id PK
-        VARCHAR name
-        TEXT description
-        JSONB parameters
-        BOOLEAN is_active
+        UUID user_id FK
+        DECIMAL btc_start
+        DECIMAL btc_end
+        DECIMAL btc_growth
+        INTEGER trade_count
+        DECIMAL win_rate
+        DATE report_date UK
         TIMESTAMP created_at
-        TIMESTAMP updated_at
-    }
-
-    ai_lessons {
-        UUID id PK
-        VARCHAR topic
-        TEXT lesson_learned
-        JSONB metrics
-        UUID applied_to_strategy FK
-        TIMESTAMP created_at
-    }
-
-    ai_signal_weights {
-        UUID id PK
-        VARCHAR signal_name
-        DECIMAL weight
-        JSONB context
-        TIMESTAMP updated_at
-    }
-
-    ai_decision_logs {
-        UUID id PK
-        VARCHAR trade_pair
-        VARCHAR decision
-        DECIMAL confidence_score
-        TEXT reasoning
-        JSONB context_data
-        TIMESTAMP created_at
-    }
-
-    pool_memories {
-        UUID id PK
-        VARCHAR pool_address
-        VARCHAR chain
-        JSONB memory_data
-        TIMESTAMP last_analyzed_at
     }
 
     users ||--o{ api_keys : has
     users ||--|| user_configs : configures
-    users ||--o{ wch_transactions : makes
-    users ||--o{ system_logs : triggers
-    ai_strategies ||--o{ ai_lessons : improves
+    users ||--o{ trading_pairs : monitors
+    users ||--o{ asset_targets : holds
+    users ||--o{ exchange_accounts : owns
+    users ||--o{ orders : places
+    users ||--o{ asset_inventory : holds
+    users ||--o{ btc_treasury_snapshots : treasury
+    users ||--o{ btc_accumulation_ledger : accumulates
+    users ||--o{ btc_accumulation_metrics : tracks
+    users ||--o{ wch_transactions : transacts
+    users ||--|| system_logs : logs
+    users ||--o{ daily_reports : reports
+
+    api_keys ||--|| users : belongs_to
+    exchange_accounts ||--|| users : belongs_to
+    user_configs ||--|| users : belongs_to
+    trading_pairs ||--|| users : belongs_to
+    asset_targets ||--|| users : belongs_to
+
+    market_candles ||--|| market_snapshots : feeds
+    market_snapshots ||--o{ signal_history : generates
+
+    strategies ||--o{ strategy_runs : executes
+    strategy_runs ||--|| ai_decisions : yields
+    ai_decisions ||--|| ai_providers : via
+    ai_providers ||--o{ ai_prompt_versions : versions
+    ai_decisions ||--o{ ai_feedback : evaluated_by
+
+    orders ||--o{ trade_executions : fills
+    asset_inventory ||--o{ btc_treasury_snapshots : snapshots

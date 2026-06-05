@@ -1,2 +1,11 @@
 *.zip
 .env
+temp.md
+.claude
+learning_engine.md
+market_analyst.md
+pair_analyst.md
+risk_guardian.md
+trader_reviewer.md
+execution_advisor.md
+ROADMAP.md
