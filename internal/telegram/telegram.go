@@ -417,6 +417,7 @@ func (b *Bot) processUpdate(update Update) {
 		response = "An error occurred while processing your request."
 	}
 
+	b.logger.Infof("Sending response to user %d: %s", msg.Chat.ID, response)
 	if err := b.SendMessage(msg.Chat.ID, response); err != nil {
 		b.logger.Errorf("Failed to send message to chat %d: %v", msg.Chat.ID, err)
 	}
