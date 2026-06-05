@@ -37,8 +37,8 @@ func InitEncryption() error {
 
 	// Support base64 encoded atau raw string
 	key, err := base64.StdEncoding.DecodeString(keyStr)
-	if err != nil {
-		// Jika bukan base64, coba sebagai raw string
+	if err != nil || len(key) != 32 {
+		// Jika bukan base64 valid sepanjang 32 byte, gunakan sebagai raw string
 		key = []byte(keyStr)
 	}
 

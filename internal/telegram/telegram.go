@@ -235,6 +235,7 @@ func (b *Bot) RegisterDefaultHandlers() {
 	b.Register("report", b.handleReport)
 	b.Register("profile", b.handleProfile)
 	b.Register("setapikey", b.handleSetAPIKey)
+	b.Register("api", b.handleSetAPIKey)
 }
 
 // Register registers a command handler
@@ -863,18 +864,18 @@ No open positions.
 func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args string) (string, error) {
 	if args == "" {
 		return "" +
-			"*🔐 Set API Key*\n\n" +
+			"🔐 Set API Key\n\n" +
 			"Pilih exchange dan masukkan credential:\n\n" +
-			"*Format:*\n" +
+			"Format:\n" +
 			"/setapikey <exchange> <api_key> <api_secret> [passphrase]\n\n" +
-			"*Contoh Binance:*\n" +
-			"/setapikey binance YOUR_API_KEY YOUR_API_SECRET\n\n" +
-			"*Contoh OKX:*\n" +
-			"/setapikey okx YOUR_API_KEY YOUR_API_SECRET YOUR_PASSPHRASE\n\n" +
-			"*Exchange yang didukung:*\n" +
+			"Contoh Binance:\n" +
+			"/setapikey binance YOUR-API-KEY YOUR-API-SECRET\n\n" +
+			"Contoh OKX:\n" +
+			"/setapikey okx YOUR-API-KEY YOUR-API-SECRET YOUR-PASSPHRASE\n\n" +
+			"Exchange yang didukung:\n" +
 			"• binance — Binance Spot\n" +
 			"• okx — OKX (wajib ada passphrase)\n\n" +
-			"*Security Notice:*\n" +
+			"Security Notice:\n" +
 			"• API keys dienkripsi dengan AES-256\n" +
 			"• Hanya butuh permission Trade (withdraw disabled)\n" +
 			"• Passphrase OKX juga Dienkripsi", nil
@@ -883,7 +884,7 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 	parts := strings.Fields(args)
 	if len(parts) < 3 {
 		return "" +
-			"*🔐 Set API Key — Error*\n\n" +
+			"🔐 Set API Key — Error\n\n" +
 			"Format salah. Gunakan:\n" +
 			"/setapikey <exchange> <api_key> <api_secret> [passphrase]\n\n" +
 			"Contoh: /setapikey binance abc123 secret456\n" +
@@ -914,18 +915,18 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 	// Encrypt semua credential
 	encAPIKey, err := auth.Encrypt(apiKey)
 	if err != nil {
-		return "*🔐 Set API Key — Error*\n\nGagal mengenkripsi API key.", err
+		return "🔐 Set API Key — Error\n\nGagal mengenkripsi API key.", err
 	}
 	encAPISecret, err := auth.Encrypt(apiSecret)
 	if err != nil {
-		return "*🔐 Set API Key — Error*\n\nGagal mengenkripsi API secret.", err
+		return "🔐 Set API Key — Error\n\nGagal mengenkripsi API secret.", err
 	}
 
 	var encPassphrase *string
 	if passphrase != "" {
 		encP, err := auth.Encrypt(passphrase)
 		if err != nil {
-			return "*🔐 Set API Key — Error*\n\nGagal mengenkripsi passphrase.", err
+			return "🔐 Set API Key — Error\n\nGagal mengenkripsi passphrase.", err
 		}
 		encPassphrase = &encP
 	}
@@ -943,14 +944,14 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 			updated_at = CURRENT_TIMESTAMP
 	`, user.ID, exchange, encAPIKey, encAPISecret, encPassphrase)
 	if err != nil {
-		return "*🔐 Set API Key — Error*\n\nGagal menyimpan ke database.", err
+		return "🔐 Set API Key — Error\n\nGagal menyimpan ke database.", err
 	}
 
 	maskedKey := MaskAPIKey(apiKey)
 	exchangeLabel := strings.ToUpper(exchange)
 
 	return fmt.Sprintf(
-		"*🔐 API Key Tersimpan✓*\n\n"+"Exchange: %s\n"+"API Key: %s\n"+"Status: Active\n\n"+"Credential sudah dienkripsi dan disimpan.",
+		"🔐 API Key Tersimpan✓\n\n"+"Exchange: %s\n"+"API Key: %s\n"+"Status: Active\n\n"+"Credential sudah dienkripsi dan disimpan.",
 		exchangeLabel, maskedKey), nil
 }
 
