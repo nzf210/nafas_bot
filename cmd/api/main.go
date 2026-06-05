@@ -113,6 +113,7 @@ func main() {
 			DB:          db,
 			Exchange:    binanceClient,
 		})
+		telegramBot.RegisterDefaultHandlers()
 		telegramBot.Start()
 		logg.Infof("Telegram bot initialized with queue system")
 	}

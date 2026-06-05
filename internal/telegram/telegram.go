@@ -385,6 +385,10 @@ func (b *Bot) HandleUpdate(update Update) error {
 //   - Tidak ada return value langsung
 func (b *Bot) processUpdate(update Update) {
 	msg := update.Message
+	if msg == nil {
+		return
+	}
+
 
 	parts := strings.SplitN(msg.Text, " ", 2)
 	command := strings.TrimPrefix(parts[0], "/")
