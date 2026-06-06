@@ -55,17 +55,17 @@ const (
 //   - stopCh: chan struct{} — shutdown signal channel
 //   - wg: sync.WaitGroup — waitgroup untuk graceful shutdown workers
 type Bot struct {
-	token        string
-	webhookURL   string
-	authService  *auth.Service
-	db           *sql.DB
-	exchange     exchange.Exchange
-	httpClient   *http.Client
-	logger       *logger.Logger
-	handlers     map[string]CommandHandler
-	jobQueue     chan Update
-	stopCh       chan struct{}
-	wg           sync.WaitGroup
+	token       string
+	webhookURL  string
+	authService *auth.Service
+	db          *sql.DB
+	exchange    exchange.Exchange
+	httpClient  *http.Client
+	logger      *logger.Logger
+	handlers    map[string]CommandHandler
+	jobQueue    chan Update
+	stopCh      chan struct{}
+	wg          sync.WaitGroup
 }
 
 // CommandHandler defines a command handler function
@@ -75,8 +75,10 @@ type Bot struct {
 //   - ctx: context.Context — context untuk operasi
 //   - user: *models.User — user yang mengirim command
 //   - args: string — argumen dari command
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - Depends on specific command implementation
+//
 // Output/Return Value:
 //   - string: response message untuk user
 //   - interface{}: inline keyboard markup (bisa nil)
@@ -92,12 +94,14 @@ type CommandHandler func(ctx context.Context, user *models.User, args string) (s
 //   - AuthService: *auth.Service — auth service
 //   - DB: *sql.DB — database connection
 //   - Exchange: exchange.Exchange — exchange client
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - NewBotWithConfig: dipanggil untuk buat bot instance
+//
 // Output/Return Value:
 //   - BotConfig: struct konfigurasi
 type BotConfig struct {
-	Token string
+	Token       string
 	WebhookURL  string
 	AuthService *auth.Service
 	DB          *sql.DB
@@ -107,25 +111,29 @@ type BotConfig struct {
 // NewBotWithConfig creates a new Telegram bot with full dependencies
 // Nama Function: NewBotWithConfig
 // Deskripsi: Membuat instance Telegram bot baru dengan dependencies lengkap.
-//   Worker pool akan dimulai setelah bot dibuat via Start().
+//
+//	Worker pool akan dimulai setelah bot dibuat via Start().
+//
 // Parameter/Value Input:
 //   - config: BotConfig — konfigurasi dengan semua dependencies
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - RegisterDefaultHandlers: dipanggil untuk register semua command handlers
+//
 // Output/Return Value:
 //   - *Bot: pointer ke bot instance
 func NewBotWithConfig(config BotConfig) *Bot {
 	bot := &Bot{
-		token:        config.Token,
-		webhookURL:   config.WebhookURL,
-		authService:  config.AuthService,
-		db:           config.DB,
-		exchange:     config.Exchange,
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
-		logger:       logger.Default().WithField("module", "telegram"),
-		handlers:     make(map[string]CommandHandler),
-		jobQueue:     make(chan Update, QueueSize),
-		stopCh:       make(chan struct{}),
+		token:       config.Token,
+		webhookURL:  config.WebhookURL,
+		authService: config.AuthService,
+		db:          config.DB,
+		exchange:    config.Exchange,
+		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		logger:      logger.Default().WithField("module", "telegram"),
+		handlers:    make(map[string]CommandHandler),
+		jobQueue:    make(chan Update, QueueSize),
+		stopCh:      make(chan struct{}),
 	}
 
 	bot.RegisterDefaultHandlers()
@@ -138,8 +146,10 @@ func NewBotWithConfig(config BotConfig) *Bot {
 // Deskripsi: Memulai worker pool untuk memproses updates secara concurrent.
 // Parameter/Value Input:
 //   - Tidak ada parameter input langsung
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - StartWorkers: dipanggil untuk spawn worker goroutines
+//
 // Output/Return Value:
 //   - Tidak ada return value langsung
 func (b *Bot) Start() {
@@ -156,9 +166,11 @@ func (b *Bot) Start() {
 // Deskripsi: Menghentikan worker pool secara graceful.
 // Parameter/Value Input:
 //   - Tidak ada parameter input langsung
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - close(b.stopCh): dipanggil untuk signal workers untuk berhenti
 //   - b.wg.Wait: dipanggil untuk wait semua workers selesai
+//
 // Output/Return Value:
 //   - Tidak ada return value langsung
 func (b *Bot) Stop() {
@@ -176,9 +188,11 @@ func (b *Bot) Stop() {
 // Deskripsi: Worker goroutine yang memproses queued updates dengan panic recovery.
 // Parameter/Value Input:
 //   - id: int — worker ID untuk logging
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - processUpdate: dipanggil untuk process setiap update dari queue
 //   - recover: dipanggil via defer untuk catch panic
+//
 // Output/Return Value:
 //   - Tidak ada return value langsung
 func (b *Bot) worker(id int) {
@@ -212,8 +226,10 @@ func (b *Bot) worker(id int) {
 //   - token: string — bot token dari BotFather
 //   - authService: *auth.Service — auth service
 //   - webhookURL: string — webhook URL (kosongkan untuk polling)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - RegisterDefaultHandlers: dipanggil untuk register semua command handlers
+//
 // Output/Return Value:
 //   - *Bot: pointer ke bot instance
 func NewBot(token string, authService *auth.Service, webhookURL string) *Bot {
@@ -229,8 +245,10 @@ func NewBot(token string, authService *auth.Service, webhookURL string) *Bot {
 // Deskripsi: Mendaftarkan semua command handlers default.
 // Parameter/Value Input:
 //   - Tidak ada parameter input langsung
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - bot.Register: dipanggil untuk setiap command
+//
 // Output/Return Value:
 //   - Tidak ada return value
 func (b *Bot) RegisterDefaultHandlers() {
@@ -258,8 +276,10 @@ func (b *Bot) RegisterDefaultHandlers() {
 // Parameter/Value Input:
 //   - command: string — nama command (tanpa slash)
 //   - handler: CommandHandler — function handler
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - Tidak ada function langsung
+//
 // Output/Return Value:
 //   - Tidak ada return value
 func (b *Bot) Register(command string, handler CommandHandler) {
@@ -273,14 +293,16 @@ func (b *Bot) Register(command string, handler CommandHandler) {
 //   - UpdateID: int64 — ID unik update
 //   - Message: Message — message object (nullable)
 //   - CallbackQuery: CallbackQuery — callback query (nullable)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - ParseUpdate: dipanggil untuk parse JSON ke struct
+//
 // Output/Return Value:
 //   - Update: struct update
 type Update struct {
-	UpdateID       int64          `json:"update_id"`
-	Message        *Message       `json:"message,omitempty"`
-	CallbackQuery  *CallbackQuery `json:"callback_query,omitempty"`
+	UpdateID      int64          `json:"update_id"`
+	Message       *Message       `json:"message,omitempty"`
+	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
 }
 
 // Message represents Telegram message
@@ -292,8 +314,10 @@ type Update struct {
 //   - Chat: Chat — chat object
 //   - Text: string — message text
 //   - Date: int — Unix timestamp
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - SendMessage: dipanggil untuk kirim response
+//
 // Output/Return Value:
 //   - Message: struct message
 type Message struct {
@@ -312,8 +336,10 @@ type Message struct {
 //   - Username: string — username
 //   - FirstName: string — first name
 //   - LastName: string — last name
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - Authenticate: dipanggil untuk authenticate user
+//
 // Output/Return Value:
 //   - User: struct user
 type User struct {
@@ -329,8 +355,10 @@ type User struct {
 // Parameter/Value Input:
 //   - ID: int64 — chat ID
 //   - Type: string — chat type (private, group, channel)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - SendMessage: dipanggil untuk kirim message
+//
 // Output/Return Value:
 //   - Chat: struct chat
 type Chat struct {
@@ -345,8 +373,10 @@ type Chat struct {
 //   - ID: string — callback query ID
 //   - From: User — user yang menekan button
 //   - Data: string — callback data
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - AnswerCallbackQuery: dipanggil untuk answer callback
+//
 // Output/Return Value:
 //   - CallbackQuery: struct callback
 type CallbackQuery struct {
@@ -362,8 +392,10 @@ type CallbackQuery struct {
 // Deskripsi: Enqueues update ke job queue untuk diproses secara asynchronous.
 // Parameter/Value Input:
 //   - update: Update — update dari Telegram webhook/polling
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - jobQueue <- update: dipanggil untuk enqueue update ke buffered channel
+//
 // Output/Return Value:
 //   - error: error jika queue penuh atau update invalid
 func (b *Bot) HandleUpdate(update Update) error {
@@ -403,10 +435,12 @@ func (b *Bot) HandleUpdate(update Update) error {
 // Deskripsi: Memproses satu update — authenticate user, execute handler, send response.
 // Parameter/Value Input:
 //   - update: Update — update yang akan diproses
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - Authenticate: dipanggil untuk authenticate user
 //   - handlers[command]: dipanggil untuk execute command handler
 //   - SendMessage: dipanggil untuk kirim response ke user
+//
 // Output/Return Value:
 //   - Tidak ada return value langsung
 func (b *Bot) processUpdate(update Update) {
@@ -469,9 +503,11 @@ func (b *Bot) processUpdate(update Update) {
 //   - chatID: int64 — chat ID tujuan
 //   - text: string — text message
 //   - replyMarkup: interface{} — optional inline keyboard (bisa nil)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - httpClient.Do: dipanggil untuk kirim request ke Telegram API
 //   - json.Marshal: dipanggil untuk serialize request body
+//
 // Output/Return Value:
 //   - error: error jika send gagal
 func (b *Bot) SendMessage(chatID int64, text string, replyMarkup interface{}) error {
@@ -512,8 +548,10 @@ func (b *Bot) SendMessage(chatID int64, text string, replyMarkup interface{}) er
 // Deskripsi: Mengatur webhook URL untuk bot.
 // Parameter/Value Input:
 //   - url: string — webhook URL
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - httpClient.Do: dipanggil untuk set webhook via Telegram API
+//
 // Output/Return Value:
 //   - error: error jika set gagal
 func (b *Bot) SetWebhook(url string) error {
@@ -554,8 +592,10 @@ func (b *Bot) SetWebhook(url string) error {
 //   - ctx: context.Context — context
 //   - user: *models.User — user yang mengirim command
 //   - args: string — argumen (nullable)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - Tidak ada function langsung
+//
 // Output/Return Value:
 //   - string: welcome message
 //   - interface{}: inline keyboard (nil untuk handler ini)
@@ -594,8 +634,10 @@ Ketik /help untuk melihat semua command.`, firstNameOrUsername(user)), nil, nil
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — argumen
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - Tidak ada function langsung
+//
 // Output/Return Value:
 //   - string: help message
 //   - interface{}: inline keyboard (nil untuk handler ini)
@@ -637,8 +679,10 @@ Butuh bantuan? Hubungi admin.`, nil, nil
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — argumen
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.QueryRowContext: dipanggil untuk ambil user config
+//
 // Output/Return Value:
 //   - string: dashboard message
 //   - interface{}: inline keyboard (nil)
@@ -685,8 +729,10 @@ System:
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — argumen
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.QueryContext: dipanggil untuk ambil asset inventory
+//
 // Output/Return Value:
 //   - string: portfolio message
 //   - interface{}: inline keyboard (nil)
@@ -728,8 +774,10 @@ func (b *Bot) handlePortfolio(ctx context.Context, user *models.User, args strin
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — argumen
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.QueryRowContext: dipanggil untuk ambil user config
+//
 // Output/Return Value:
 //   - string: settings message
 //   - interface{}: inline keyboard markup
@@ -818,8 +866,10 @@ _Klik tombol di bawah untuk mengubah pengaturan._
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — argumen
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.PingContext: dipanggil untuk cek koneksi database
+//
 // Output/Return Value:
 //   - string: status message
 //   - interface{}: inline keyboard (nil)
@@ -855,8 +905,10 @@ func (b *Bot) handleStatus(ctx context.Context, user *models.User, args string) 
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — argumen
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.QueryContext: dipanggil untuk ambil open orders
+//
 // Output/Return Value:
 //   - string: positions message
 //   - interface{}: inline keyboard (nil)
@@ -913,9 +965,11 @@ No open positions.
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — format: "<exchange> <api_key> <api_secret> [passphrase]"
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - auth.Encrypt: dipanggil untuk enkripsi API key, secret, dan passphrase
 //   - db.ExecContext: dipanggil untuk INSERT/UPDATE ke tabel api_keys
+//
 // Output/Return Value:
 //   - string: success/error message
 //   - interface{}: inline keyboard (nil)
@@ -1028,6 +1082,7 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 // Deskripsi: Menghasilkan masked version dari API key (tampilkan 4 karakter pertama dan terakhir).
 // Parameter/Value Input:
 //   - key: string — API key yang akan di-mask
+//
 // Output/Return Value:
 //   - string: masked API key (misal "BN***ABCD1234")
 func MaskAPIKey(key string) string {
@@ -1044,10 +1099,12 @@ func MaskAPIKey(key string) string {
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — argumen
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.QueryRowContext: dipanggil untuk ambil encrypted API key
 //   - auth.Decrypt: dipanggil untuk decrypt API key
 //   - exchange.GetBalances: dipanggil untuk ambil balance dari exchange
+//
 // Output/Return Value:
 //   - string: balance message
 //   - interface{}: inline keyboard (nil)
@@ -1104,8 +1161,10 @@ func (b *Bot) handleBalance(ctx context.Context, user *models.User, args string)
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — argumen
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - Tidak ada function langsung
+//
 // Output/Return Value:
 //   - string: panduan penggunaan lengkap
 //   - interface{}: inline keyboard (nil)
@@ -1157,7 +1216,7 @@ func (b *Bot) handleGuide(ctx context.Context, user *models.User, args string) (
 Start → Setup API Key → Konfigurasi
 → Aktifkan Auto-Trade → Monitoring
 
-Butuh bantuan? Hubungi admin.`, nil, nil
+Butuh bantuan? Hubungi admin. @nafaswch `, nil, nil
 }
 
 // handleReport handles /report command — daily/weekly trading reports
@@ -1167,9 +1226,11 @@ Butuh bantuan? Hubungi admin.`, nil, nil
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — tipe laporan (daily/weekly, default: daily)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.QueryRowContext: dipanggil untuk ambil daily report
 //   - db.QueryContext: dipanggil untuk ambil historical reports
+//
 // Output/Return Value:
 //   - string: laporan trading
 //   - interface{}: inline keyboard (nil)
@@ -1304,9 +1365,11 @@ Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTi
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — argumen
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.QueryRowContext: dipanggil untuk ambil user config
 //   - db.QueryContext: dipanggil untuk ambil statistics
+//
 // Output/Return Value:
 //   - string: profil user lengkap
 //   - interface{}: inline keyboard (nil)
@@ -1426,10 +1489,12 @@ Gunakan /settings untuk mengubah konfigurasi.`, user.TelegramID, username, statu
 //   - ctx: context.Context — context
 //   - user: *models.User — user yang menekan button
 //   - cbq: *CallbackQuery — callback query dari Telegram
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - AnswerCallbackQuery: dipanggil untuk answer callback (hilangkan loading)
 //   - SendMessage: dipanggil untuk kirim response ke user
 //   - db.ExecContext: dipanggil untuk update konfigurasi user
+//
 // Output/Return Value:
 //   - Tidak ada return value langsung
 func (b *Bot) handleCallbackQuery(ctx context.Context, user *models.User, cbq *CallbackQuery) {
@@ -1607,8 +1672,10 @@ Contoh:
 // Parameter/Value Input:
 //   - callbackID: string — ID dari callback query
 //   - text: string — text untuk ditampilkan (opsional, kosongkan untuk sembunyikan)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - httpClient.Do: dipanggil untuk kirim request ke Telegram API
+//
 // Output/Return Value:
 //   - error: error jika request gagal
 func (b *Bot) AnswerCallbackQuery(callbackID string, text string) error {
@@ -1644,8 +1711,10 @@ func (b *Bot) AnswerCallbackQuery(callbackID string, text string) error {
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — nilai risk dalam persen (contoh: "1.5")
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.ExecContext: dipanggil untuk UPSERT user_configs
+//
 // Output/Return Value:
 //   - string: success/error message
 //   - interface{}: inline keyboard (nil)
@@ -1683,8 +1752,10 @@ func (b *Bot) handleSetRisk(ctx context.Context, user *models.User, args string)
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — nilai limit dalam persen (contoh: "5" untuk 5%)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.ExecContext: dipanggil untuk UPSERT user_configs
+//
 // Output/Return Value:
 //   - string: success/error message
 //   - interface{}: inline keyboard (nil)
@@ -1722,8 +1793,10 @@ func (b *Bot) handleSetDailyLoss(ctx context.Context, user *models.User, args st
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — jumlah posisi (contoh: "5")
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.ExecContext: dipanggil untuk UPSERT user_configs
+//
 // Output/Return Value:
 //   - string: success/error message
 //   - interface{}: inline keyboard (nil)

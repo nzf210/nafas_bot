@@ -114,6 +114,15 @@ func main() {
 			Exchange:    binanceClient,
 		})
 		telegramBot.RegisterDefaultHandlers()
+		
+		if cfg.TelegramWebhookURL != "" {
+			if err := telegramBot.SetWebhook(cfg.TelegramWebhookURL + "/webhook"); err != nil {
+				logg.Errorf("Failed to set webhook: %v", err)
+			} else {
+				logg.Infof("Webhook set to %s/webhook", cfg.TelegramWebhookURL)
+			}
+		}
+		
 		telegramBot.Start()
 		logg.Infof("Telegram bot initialized with queue system")
 	}
