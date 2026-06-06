@@ -24,6 +24,7 @@ import (
 	"github.com/nzf210/nafas-bot/internal/execution"
 	"github.com/nzf210/nafas-bot/internal/learning"
 	"github.com/nzf210/nafas-bot/internal/logger"
+	"github.com/nzf210/nafas-bot/internal/orchestrator"
 	"github.com/nzf210/nafas-bot/internal/risk"
 	"github.com/nzf210/nafas-bot/internal/scanner"
 	"github.com/nzf210/nafas-bot/internal/strategy"
@@ -103,6 +104,16 @@ func main() {
 	_ = execution.NewExecutor(db, binanceClient)
 	logg.Info("Order executor initialized")
 
+	// Initialize Multi-Account Orchestrator
+	var tradingOrchestrator *orchestrator.Orchestrator
+	if cfg.LLMAPIKey != "" {
+		aiCoordinator := ai.NewCoordinator(db, cfg.LLMAPIKey, cfg.LLMProviderURL, cfg.LLMModel)
+		strategyEngine := strategy.NewStrategyEngine(db)
+		tradingOrchestrator = orchestrator.NewOrchestrator(db, binanceClient, marketScanner, aiCoordinator, strategyEngine)
+		tradingOrchestrator.Start(context.Background())
+		logg.Info("Multi-account trading orchestrator started")
+	}
+
 	// Initialize Telegram Bot with full dependencies
 	var telegramBot *telegram.Bot
 	if cfg.TelegramBotToken != "" {
@@ -166,6 +177,11 @@ func main() {
 	// Stop Telegram bot workers gracefully
 	if telegramBot != nil {
 		telegramBot.Stop()
+	}
+
+	// Stop trading orchestrator
+	if tradingOrchestrator != nil {
+		tradingOrchestrator.Stop()
 	}
 
 	logg.Info("Server stopped")
