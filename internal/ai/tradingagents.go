@@ -15,7 +15,92 @@ import (
 	"time"
 
 	"github.com/nzf210/nafas-bot/internal/logger"
+	"github.com/shopspring/decimal"
 )
+
+// CoordinatorDecision represents AI Coordinator output
+// Used by both TradingAgentsClient and for orchestrator compatibility
+// Nama Function: CoordinatorDecision
+// Deskripsi: Struct output dari AI Coordinator.
+// Parameter/Value Input:
+//   - MarketContext: MarketContext — context market saat ini
+//   - TopPairs: []string — ranked pairs untuk trading
+//   - TradeDecision: string — keputusan (buy, sell, hold, skip)
+//   - RiskAssessment: RiskAssessment — assessment risk dari AI
+//   - ExecutionPlan: ExecutionPlan — rencana eksekusi
+//   - Confidence: decimal.Decimal — confidence score
+// Function yang Dipanggil/Dikonsumsi:
+//   - TradingAgentsClient.Decide: dipanggil untuk generate decision
+// Output/Return Value:
+//   - CoordinatorDecision: struct decision lengkap
+type CoordinatorDecision struct {
+	MarketContext   MarketContext   `json:"market_context"`
+	TopPairs        []string `json:"top_pairs"`
+	TradeDecision   string         `json:"trade_decision"`
+	RiskAssessment  RiskAssessment `json:"risk_assessment"`
+	ExecutionPlan  ExecutionPlan  `json:"execution_plan"`
+	Confidence decimal.Decimal `json:"confidence"`
+}
+
+// MarketContext represents current market conditions
+// Nama Function: MarketContext
+// Deskripsi: Struct context pasar saat ini.
+// Parameter/Value Input:
+//   - Regime: string — bull, bear, atau crab
+//   - OverallSentiment: string — sentiment keseluruhan
+// Function yang Dipanggil/Dikonsumsi:
+//   - TradingAgentsClient.Analyze: dipanggil untuk generate context
+// Output/Return Value:
+//   - MarketContext: struct context pasar
+type MarketContext struct {
+	Regime           string `json:"regime"`
+	OverallSentiment string `json:"overall_sentiment"`
+}
+
+// RiskAssessment represents AI risk assessment
+// Nama Function: RiskAssessment
+// Deskripsi: Struct assessment risk dari AI.
+// Parameter/Value Input:
+//   - Level: string — low, medium, high, extreme
+// Function yang Dipanggil/Dikonsumsi:
+//   - risk_guardian.CheckTrade: dipanggil untuk validasi final
+// Output/Return Value:
+//   - RiskAssessment: struct assessment
+type RiskAssessment struct {
+	Level string `json:"level"`
+}
+
+// ExecutionPlan represents trade execution plan
+// Nama Function: ExecutionPlan
+// Deskripsi: Struct rencana eksekusi trade.
+// Parameter/Value Input:
+//   - OrderType: string — market, limit, atau twap
+//   - StopLoss: decimal.Decimal — stop loss percentage
+//   - TakeProfitLevels: []TakeProfitLevel — level take profit
+// Function yang Dipanggil/Dikonsumsi:
+//   - execution.PlaceOrder: dipanggil untuk eksekusi plan
+// Output/Return Value:
+//   - ExecutionPlan: struct plan eksekusi
+type ExecutionPlan struct {
+	OrderType        string `json:"order_type"`
+	StopLoss         decimal.Decimal   `json:"stop_loss"`
+	TakeProfitLevels []TakeProfitLevel `json:"take_profit_levels"`
+}
+
+// TakeProfitLevel represents a take profit level
+// Nama Function: TakeProfitLevel
+// Deskripsi: Struct level take profit.
+// Parameter/Value Input:
+//   - TargetPercent: float64 — target percentage dari entry
+//   - QuantityPercent: float64 — percentage of position to close
+// Function yang Dipanggil/Dikonsumsi:
+//   - execution.PlaceOrder: dipanggil untuk setiap level TP
+// Output/Return Value:
+//   - TakeProfitLevel: struct level TP
+type TakeProfitLevel struct {
+	TargetPercent   float64 `json:"target_percent"`
+	QuantityPercent float64 `json:"quantity_percent"`
+}
 
 // TradingAgentsClient adalah client untuk TradingAgents API
 // Support custom LLM base URL untuk Ollama, LM Studio, dll
@@ -210,4 +295,106 @@ func (c *TradingAgentsClient) HealthCheck(ctx context.Context) (bool, error) {
 	defer resp.Body.Close()
 
 	return resp.StatusCode == http.StatusOK, nil
+}
+
+// Decide adalah wrapper untuk Analyze yang menghasilkan CoordinatorDecision.
+// Ini membuat TradingAgentsClient bisa digunakan sebagai drop-in replacement untuk Coordinator.
+// Nama Function: Decide
+// Deskripsi: Wrapper untuk Analyze yang menghasilkan CoordinatorDecision yang kompatibel.
+// Convert response dari TradingAgents ke format CoordinatorDecision untuk orchestrator.
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk HTTP request
+//   - symbol: string — symbol trading (e.g., BTCUSDT)
+//   - marketData: map[string]interface{} — data market (tidak digunakan langsung oleh TradingAgents)
+//   - systemPrompt: string — system prompt (tidak digunakan, sudah ada di TradingAgents)
+// Function yang Dipanggil/Dikonsumsi:
+//   - Analyze: dipanggil untuk analisis ticker via TradingAgents
+//   - convertToCoordinatorDecision: dipanggil untuk convert response
+// Output/Return Value:
+//   - *CoordinatorDecision: keputusan AI dalam format CoordinatorDecision
+//   - error: error jika analisis gagal
+func (c *TradingAgentsClient) Decide(ctx context.Context, symbol string, marketData map[string]interface{}, systemPrompt string) (*CoordinatorDecision, error) {
+	// Convert symbol dari Binance format (BTCUSDT) ke TradingAgents format (BTC-USD)
+	ticker := convertSymbolToTradingAgents(symbol)
+
+	// Get current date
+	date := time.Now().UTC().Format("2006-01-02")
+
+	// Call TradingAgents
+	taResp, err := c.Analyze(ctx, ticker, date)
+	if err != nil {
+		return nil, fmt.Errorf("TradingAgents analysis failed: %w", err)
+	}
+
+	// Convert to CoordinatorDecision
+	return c.convertToCoordinatorDecision(symbol, taResp), nil
+}
+
+// convertToCoordinatorDecision converts TAResponse to CoordinatorDecision
+func (c *TradingAgentsClient) convertToCoordinatorDecision(symbol string, taResp *TAResponse) *CoordinatorDecision {
+	decision := CoordinatorDecision{
+		MarketContext: MarketContext{
+			Regime:           getRegimeFromAction(taResp.Action),
+			OverallSentiment: taResp.Reasoning,
+		},
+		TopPairs:      []string{symbol},
+		TradeDecision: taResp.Action,
+		RiskAssessment: RiskAssessment{
+			Level: getRiskLevel(taResp.Confidence),
+		},
+		Confidence: decimal.NewFromFloat(taResp.Confidence),
+	}
+
+	// Set execution plan
+	if taResp.StopLoss > 0 {
+		decision.ExecutionPlan = ExecutionPlan{
+			OrderType: "market",
+			StopLoss:  decimal.NewFromFloat(taResp.StopLoss),
+		}
+	}
+
+	// Set take profit levels
+	for i, tp := range taResp.TakeProfitTargets {
+		percent := float64((i + 1) * 25) // Distribute across TP targets
+		decision.ExecutionPlan.TakeProfitLevels = append(decision.ExecutionPlan.TakeProfitLevels, TakeProfitLevel{
+			TargetPercent:   percent,
+			QuantityPercent: tp,
+		})
+	}
+
+	return &decision
+}
+
+// convertSymbolToTradingAgents converts Binance symbol format to TradingAgents format
+// BTCUSDT -> BTC-USD, ETHUSDT -> ETH-USD
+func convertSymbolToTradingAgents(symbol string) string {
+	// Remove USDT suffix and add -USD suffix
+	if len(symbol) > 4 && symbol[len(symbol)-4:] == "USDT" {
+		return symbol[:len(symbol)-4] + "-USD"
+	}
+	return symbol
+}
+
+// getRegimeFromAction determines market regime from action
+func getRegimeFromAction(action string) string {
+	switch action {
+	case "BUY":
+		return "bull"
+	case "SELL":
+		return "bear"
+	default:
+		return "crab"
+	}
+}
+
+// getRiskLevel determines risk level from confidence
+func getRiskLevel(confidence float64) string {
+	if confidence >= 80 {
+		return "low"
+	} else if confidence >= 60 {
+		return "medium"
+	} else if confidence >= 40 {
+		return "high"
+	}
+	return "extreme"
 }

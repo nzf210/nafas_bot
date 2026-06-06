@@ -163,7 +163,7 @@ type TradingPair struct {
 //   - CurrentAmount: decimal — jumlah saat ini
 //   - Priority: int — prioritas asset
 // Function yang Dipanggil/Dikonsumsi:
-//   - ai.Coordinator: dipanggil untuk decision making berdasarkan target
+//   - ai.TradingAgentsClient: dipanggil untuk decision making berdasarkan target
 // Output/Return Value:
 //   - AssetTarget: struct target asset
 type AssetTarget struct {
@@ -282,7 +282,7 @@ type Strategy struct {
 //   - Status: string — status run (running, completed, failed)
 //   - StartedAt, CompletedAt: time.Time — timestamp start dan selesai
 // Function yang Dipanggil/Dikonsumsi:
-//   - ai.Coordinator.Run: dipanggil untuk orchestrate strategy run
+//   - orchestrator.Orchestrator.RunCycle: dipanggil untuk orchestrate strategy run
 // Output/Return Value:
 //   - StrategyRun: struct execution log strategi
 type StrategyRun struct {
@@ -498,7 +498,7 @@ type AIPromptVersion struct {
 //   - Reasoning: string — reasoning dari AI
 //   - InputContext, OutputContext: json.RawMessage — context penuh untuk debugging
 // Function yang Dipanggil/Dikonsumsi:
-//   - ai.Coordinator.Decide: dipanggil untuk generate decision
+//   - ai.TradingAgentsClient.Decide: dipanggil untuk generate decision
 //   - learning.LogDecision: dipanggil untuk store decision
 // Output/Return Value:
 //   - AIDecision: struct decision AI

@@ -45,7 +45,7 @@ const (
 //   - db: *sql.DB — koneksi database
 //   - exchange: exchange.Exchange — exchange client
 //   - scanner: *scanner.Scanner — market scanner
-//   - ai: *ai.Coordinator — AI coordinator
+//   - ai: *ai.TradingAgentsClient — TradingAgents AI client
 //   - engine: *strategy.StrategyEngine — strategy engine
 //   - logger: *logger.Logger — logger instance
 // Function yang Dipanggil/Dikonsumsi:
@@ -58,7 +58,7 @@ type Orchestrator struct {
 	db *sql.DB
 	exchange exchange.Exchange
 	scanner  *scanner.Scanner
-	ai       *ai.Coordinator
+	ai       *ai.TradingAgentsClient
 	engine   *strategy.StrategyEngine
 	logger   *logger.Logger
 	stopCh   chan struct{}
@@ -72,18 +72,18 @@ type Orchestrator struct {
 //   - db: *sql.DB — koneksi database
 //   - exch: exchange.Exchange — exchange client
 //   - scan: *scanner.Scanner — market scanner
-//   - aiCoord: *ai.Coordinator — AI coordinator
+//   - taClient: *ai.TradingAgentsClient — TradingAgents AI client
 //   - eng: *strategy.StrategyEngine — strategy engine
 // Function yang Dipanggil/Dikonsumsi:
 //   - Tidak ada function langsung, hanya inisialisasi
 // Output/Return Value:
 //   - *Orchestrator: pointer ke orchestrator instance
-func NewOrchestrator(db *sql.DB, exch exchange.Exchange, scan *scanner.Scanner, aiCoord *ai.Coordinator, eng *strategy.StrategyEngine) *Orchestrator {
+func NewOrchestrator(db *sql.DB, exch exchange.Exchange, scan *scanner.Scanner, taClient *ai.TradingAgentsClient, eng *strategy.StrategyEngine) *Orchestrator {
 	return&Orchestrator{
 		db:       db,
 		exchange: exch,
 		scanner:  scan,
-		ai:      aiCoord,
+		ai:      taClient,
 		engine:  eng,
 		logger:  logger.Default().WithField("module", "orchestrator"),
 		stopCh:  make(chan struct{}),

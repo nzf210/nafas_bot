@@ -44,7 +44,7 @@ import (
 //   - exchange.NewBinance: dipanggil untuk inisialisasi exchange client
 //   - scanner.NewScanner: dipanggil untuk inisialisasi scanner
 //   - risk.NewGuardian: dipanggil untuk inisialisasi risk guardian
-//   - ai.NewCoordinator: dipanggil untuk inisialisasi AI coordinator
+//   - ai.NewTradingAgentsClient: dipanggil untuk inisialisasi TradingAgents AI client
 //   - learning.NewService: dipanggil untuk inisialisasi learning service
 //   - execution.NewExecutor: dipanggil untuk inisialisasi executor
 //   - telegram.NewBotWithConfig: dipanggil untuk inisialisasi Telegram bot
@@ -96,9 +96,14 @@ func main() {
 	)
 	logg.Info("Market scanner initialized")
 
-	// Initialize AI Coordinator
-	_ = ai.NewCoordinator(db, cfg.LLMAPIKey, cfg.LLMProviderURL, cfg.LLMModel)
-	logg.Info("AI Coordinator initialized")
+	// Initialize AI Coordinator (TradingAgents)
+	taClient := ai.NewTradingAgentsClient(
+		cfg.TradingAgentsURL,
+		cfg.LLMAPIKey,
+		cfg.LLMModel,
+		cfg.LLMBaseURL,
+	)
+	logg.Info("TradingAgents AI client initialized")
 
 	// Initialize Executor
 	_ = execution.NewExecutor(db, binanceClient)
@@ -106,10 +111,9 @@ func main() {
 
 	// Initialize Multi-Account Orchestrator
 	var tradingOrchestrator *orchestrator.Orchestrator
-	if cfg.LLMAPIKey != "" {
-		aiCoordinator := ai.NewCoordinator(db, cfg.LLMAPIKey, cfg.LLMProviderURL, cfg.LLMModel)
+	if cfg.TradingAgentsURL != "" {
 		strategyEngine := strategy.NewStrategyEngine(db)
-		tradingOrchestrator = orchestrator.NewOrchestrator(db, binanceClient, marketScanner, aiCoordinator, strategyEngine)
+		tradingOrchestrator = orchestrator.NewOrchestrator(db, binanceClient, marketScanner, taClient, strategyEngine)
 		tradingOrchestrator.Start(context.Background())
 		logg.Info("Multi-account trading orchestrator started")
 	}

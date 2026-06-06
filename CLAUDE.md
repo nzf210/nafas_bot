@@ -40,30 +40,41 @@ internal/
   strategy   — Strategy definitions and runs
   risk       — Risk Guardian (hardcoded rules, NOT AI)
   execution  — Order execution (Market/Limit/TWAP)
-  ai         — AI Coordinator + agent interfaces
+  ai         — TradingAgents client (drop-in replacement untuk old Coordinator)
   learning   — Learning Engine, trade/market/strategy memories
   telegram   — Telegram bot commands and handlers
 ```
 
 **DO NOT start with microservices.** Choose simplicity, modular monolith, and observable system when unsure.
 
-### AI Multi-Agent System
+### AI System: TradingAgents (Primary)
 
-AI never trades directly — it only produces structured JSON outputs. Each agent has a dedicated system prompt in a root `.md` file:
+AI backend menggunakan **TradingAgents** (Python/LangGraph) sebagai drop-in replacement untuk direct LLM calls. File `.md` agent prompts sudah deprecated.
 
-| Agent | File | Output |
-|-------|------|--------|
-| AI Coordinator | `coordinator.md` | `{market_context, top_pairs, trade_decision, risk_assessment, execution_plan, confidence}` |
-| Market Analyst | `market_analyst.md` | `{market_regime, trend_strength, confidence}` |
-| Pair Analyst | `pair_analyst.md` | `{ranked_pairs: [{pair, score}]}` |
-| Risk Guardian | `risk_guardian.md` | `{approved, risk_level, position_size_multiplier}` |
-| Trade Reviewer | `trade_reviewer.md` | `{valid, issues, recommendation}` |
-| Execution Advisor | `execution_advisor.md` | `{order_type, stop_loss, take_profit}` |
-| Learning Engine | `learning_engine.md` | `{patterns_detected, failed_patterns, strategy_updates}` |
+| Component | File | Fungsi |
+|-----------|------|--------|
+| TradingAgents Service | `services/trading_engine/` | Python FastAPI - multi-agent trading analysis |
+| Go Client | `internal/ai/tradingagents.go` | Client untuk TradingAgents API |
+| Decide() | `tradingagents.go` | Drop-in replacement untuk Coordinator.Decide() |
+
+**TradingAgents Flow:**
+```
+NAFAS (Go) → TradingAgentsClient → TradingAgents API → Multi-Agent Analysis (LangGraph)
+                                                                    ↓
+                                                              Trading Decision
+                                                                    ↓
+NAFAS Executor ← Risk Guardian ← CoordinatorDecision format
+```
 
 **Risk Guardian is the FINAL AUTHORITY.** It is hardcoded Go logic (not an AI prompt) that enforces max exposure, stop-loss requirements, and position sizing. AI prompts cannot override it.
 
-### Trading Pipeline
+### Trading Pipeline (TradingAgents)
+
+```
+Market Data → Scanner → TradingAgentsClient.Decide() → Risk Guardian → Execution → Learning
+```
+
+TradingAgents orchestrates: Market analysis → Trading decision → Risk validation → Order execution. CoordinatorDecision format ensures compatibility with existing orchestrator.
 
 ```
 Market Data → Scanner → Pair Ranking → AI Review → Risk Engine → Execution → Learning
@@ -242,7 +253,7 @@ func Default() *Logger {
 1. **`internal/logger/logger.go:238-243`** — Race condition di `Default()` → gunakan `sync.Once` *(SUDAH DIFIX)*
 2. **`internal/scanner/scanner.go:136-164`** — Sequential symbol × interval loop → worker pool dengan semaphore *(SUDAH DIFIX)*
 3. **`internal/telegram/telegram.go`** — Queue system untuk handle incoming Telegram updates *(SUDAH DIFIX)*
-4. **`internal/ai/ai.go:179-206`** — Sequential LLM calls → parallel goroutine per symbol
+4. **`internal/ai/tradingagents.go`** — TradingAgents client (drop-in replacement) *(SUDAH DIFIX)*
 5. **`internal/execution/execution.go:232-303`** — TWAP slice execution → async order status check
 6. **`internal/learning/learning.go:246-305`** — Sequential DB queries → concurrent query dengan `WaitGroup`
 
@@ -398,13 +409,30 @@ ENCRYPTION_KEY= # 32-byte AES key — REQUIRED
 LLM_PROVIDER_URL=https://api.openai.com/v1
 LLM_API_KEY=
 LLM_MODEL=gpt-4-turbo
+
+# TradingAgents (Wajib jika pakai AI)
+TRADING_AGENTS_URL=http://localhost:8000
+LLM_BASE_URL=http://localhost:11434  # Optional: Ollama/LM Studio
+LLM_MODEL=llama3                      # Optional: custom model
 ```
 
 ---
 
 ## DEPLOYMENT
 
-Single VPS with Docker Compose: Postgres + Redis + App (+ optional Ollama for local AI). Do not over-engineer infrastructure early.
+Single VPS with Docker Compose:
+- **Postgres** + **Redis** — data storage
+- **NAFAS Bot** (Go) — API Gateway, Telegram, Execution
+- **TradingAgents** (Python) — AI multi-agent analysis (containerized)
+- **Ollama** (optional) — Local LLM for reduced API costs
+
+```bash
+# Start all services
+docker compose up -d
+
+# Check TradingAgents health
+curl http://localhost:8000/health
+```
 
 ---
 

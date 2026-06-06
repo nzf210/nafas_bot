@@ -57,30 +57,34 @@ def get_ta_instance():
 
     if ta_instance is None:
         try:
-            from tradingagents.graph.trading_graph import TradingAgentsGraph
-            from tradingagents.default_config import DEFAULT_CONFIG
+            from tradingagents import TradingAgentsConfig, TradingAgentsGraph, set_config
 
             # Get LLM config from environment
             llm_base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
             llm_api_key = os.getenv("LLM_API_KEY", "")
             llm_model = os.getenv("LLM_MODEL", "gpt-4o")
 
-            # Override DEFAULT_CONFIG with environment variables
-            config = DEFAULT_CONFIG.copy()
-            config["llm_config"] = {
-                "provider": "openai",
-                "base_url": llm_base_url,
-                "api_key": llm_api_key,
-                "model": llm_model,
-            }
+            os.environ["OPENAI_BASE_URL"] = llm_base_url
+            os.environ["OPENAI_API_BASE"] = llm_base_url
+            os.environ["OPENAI_API_KEY"] = llm_api_key
+
+            config = TradingAgentsConfig(
+                llm_provider="openai",
+                deep_think_llm=llm_model,
+                quick_think_llm=llm_model,
+                max_debate_rounds=3,
+                max_risk_discuss_rounds=3,
+                max_recur_limit=30,
+            )
+            set_config(config)
 
             ta_instance = TradingAgentsGraph(config=config)
             logger.info(f"TradingAgents initialized with model: {llm_model}")
-        except ImportError as e:
-            logger.error(f"Failed to import TradingAgents: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize TradingAgents: {e}")
             raise HTTPException(
                 status_code=500,
-                detail="TradingAgents not installed. Run: pip install tradingagents"
+                detail=f"TradingAgents init failed: {e}"
             )
 
     return ta_instance
@@ -106,18 +110,17 @@ async def analyze_ticker(request: AnalyzeRequest):
     try:
         ta = get_ta_instance()
 
-        # Build LLM config override if provided
-        llm_config = None
+        # Apply LLM config override to environment if provided
         if request.llm_config:
-            llm_config = {
-                "provider": "openai",
-                "base_url": request.llm_config.base_url or os.getenv("LLM_BASE_URL"),
-                "api_key": request.llm_config.api_key or os.getenv("LLM_API_KEY"),
-                "model": request.llm_config.model or os.getenv("LLM_MODEL"),
-            }
+            if request.llm_config.base_url:
+                os.environ["OPENAI_BASE_URL"] = request.llm_config.base_url
+                os.environ["OPENAI_API_BASE"] = request.llm_config.base_url
+            if request.llm_config.api_key:
+                os.environ["OPENAI_API_KEY"] = request.llm_config.api_key
 
-        # Run TradingAgents analysis
-        state, decision = ta.propagate(request.ticker, request.date, llm_config=llm_config)
+        # Run TradingAgents analysis in a thread pool to avoid blocking the event loop
+        import asyncio
+        state, decision = await asyncio.to_thread(ta.propagate, request.ticker, request.date)
 
         # Extract response
         response = AnalyzeResponse(

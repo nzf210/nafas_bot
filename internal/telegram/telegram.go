@@ -1478,7 +1478,7 @@ Gunakan /settings untuk mengubah konfigurasi.`, user.TelegramID, username, statu
 		user.WCHBalance.String(), totalTrades, totalBTCAccumulated,
 		maxRisk, dailyLoss, maxPositions, autoTrade,
 		notifyTrade, notifyError,
-		"Contact admin to manage"), nil, nil
+		"Contact admin to manage jika ada kendala @nafaswch"), nil, nil
 }
 
 // handleCallbackQuery memproses callback query dari inline button.
