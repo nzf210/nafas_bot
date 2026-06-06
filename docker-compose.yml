@@ -45,10 +45,10 @@ services:
       dockerfile: Dockerfile
     container_name: nafas_api
     ports:
-      - "8989:8989"
+      - "8988:8988"
     environment:
       - APP_ENV=${APP_ENV:-development}
-      - APP_PORT=8989
+      - APP_PORT=8988
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - DB_HOST=shared-postgres-db
       - DB_PORT=5432
