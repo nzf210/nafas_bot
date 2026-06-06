@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y \
 
 # Copy requirements and install
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --default-timeout=1000 --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py .
