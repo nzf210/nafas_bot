@@ -21,7 +21,7 @@ services:
       dockerfile: Dockerfile
     container_name: nafas_trading_agents
     ports:
-      - "8000:8000"
+      - "8889:8889"
     environment:
       - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
       - LLM_API_KEY=${LLM_API_KEY}

@@ -29,7 +29,7 @@ RUN pip install -e /opt/tradingagents
 COPY . .
 
 # Expose port API (ubah jika perlu)
-EXPOSE 8000
+EXPOSE 8889
 
 # Jalankan API
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8889"]
