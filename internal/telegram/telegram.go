@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/nzf210/nafas-bot/internal/exchange"
 	"github.com/nzf210/nafas-bot/internal/logger"
 	"github.com/nzf210/nafas-bot/internal/models"
+	"github.com/shopspring/decimal"
 )
 
 // ============================================================
@@ -76,8 +79,9 @@ type Bot struct {
 //   - Depends on specific command implementation
 // Output/Return Value:
 //   - string: response message untuk user
+//   - interface{}: inline keyboard markup (bisa nil)
 //   - error: error jika command gagal
-type CommandHandler func(ctx context.Context, user *models.User, args string) (string, error)
+type CommandHandler func(ctx context.Context, user *models.User, args string) (string, interface{}, error)
 
 // BotConfig holds bot dependencies
 // Nama Function: BotConfig
@@ -167,16 +171,23 @@ func (b *Bot) Stop() {
 // worker adalah goroutine yang memproses updates dari jobQueue secara terus-menerus.
 // Setiap worker loop dengan select untuk handle stop signal atau job dari queue.
 // Worker berhenti saat stopCh ditutup.
+// Panic recovery digunakan untuk mencegah satu worker crash menghentikan seluruh sistem.
 // Nama Function: worker
-// Deskripsi: Worker goroutine yang memproses queued updates.
+// Deskripsi: Worker goroutine yang memproses queued updates dengan panic recovery.
 // Parameter/Value Input:
 //   - id: int — worker ID untuk logging
 // Function yang Dipanggil/Dikonsumsi:
 //   - processUpdate: dipanggil untuk process setiap update dari queue
+//   - recover: dipanggil via defer untuk catch panic
 // Output/Return Value:
 //   - Tidak ada return value langsung
 func (b *Bot) worker(id int) {
-	defer b.wg.Done()
+	defer func() {
+		b.wg.Done()
+		if r := recover(); r != nil {
+			b.logger.Errorf("Worker %d recovered from panic: %v\n%s", id, r, string(debug.Stack()))
+		}
+	}()
 	b.logger.Infof("Worker %d started", id)
 
 	for {
@@ -236,6 +247,9 @@ func (b *Bot) RegisterDefaultHandlers() {
 	b.Register("profile", b.handleProfile)
 	b.Register("setapikey", b.handleSetAPIKey)
 	b.Register("api", b.handleSetAPIKey)
+	b.Register("setrisk", b.handleSetRisk)
+	b.Register("setdailyloss", b.handleSetDailyLoss)
+	b.Register("setmaxpos", b.handleSetMaxPositions)
 }
 
 // Register registers a command handler
@@ -353,6 +367,17 @@ type CallbackQuery struct {
 // Output/Return Value:
 //   - error: error jika queue penuh atau update invalid
 func (b *Bot) HandleUpdate(update Update) error {
+	// Handle callback query dari inline button
+	if update.CallbackQuery != nil {
+		select {
+		case b.jobQueue <- update:
+			return nil
+		default:
+			b.logger.Warnf("Queue full, dropping callback %s from chat %d", update.CallbackQuery.ID, update.CallbackQuery.From.ID)
+			return fmt.Errorf("queue full")
+		}
+	}
+
 	if update.Message == nil {
 		return nil
 	}
@@ -385,11 +410,25 @@ func (b *Bot) HandleUpdate(update Update) error {
 // Output/Return Value:
 //   - Tidak ada return value langsung
 func (b *Bot) processUpdate(update Update) {
+	ctx := context.Background()
+
+	// Handle callback query dari inline button
+	if update.CallbackQuery != nil {
+		cbq := update.CallbackQuery
+		user, err := b.authService.Authenticate(ctx, cbq.From.ID, cbq.From.Username, cbq.From.FirstName, cbq.From.LastName)
+		if err != nil {
+			b.logger.Errorf("Failed to authenticate callback user %d: %v", cbq.From.ID, err)
+			return
+		}
+
+		b.handleCallbackQuery(ctx, user, cbq)
+		return
+	}
+
 	msg := update.Message
 	if msg == nil {
 		return
 	}
-
 
 	parts := strings.SplitN(msg.Text, " ", 2)
 	command := strings.TrimPrefix(parts[0], "/")
@@ -398,28 +437,27 @@ func (b *Bot) processUpdate(update Update) {
 		args = parts[1]
 	}
 
-	ctx := context.Background()
 	user, err := b.authService.Authenticate(ctx, msg.From.ID, msg.From.Username, msg.From.FirstName, msg.From.LastName)
 	if err != nil {
 		b.logger.Errorf("Failed to authenticate user %d: %v", msg.From.ID, err)
-		b.SendMessage(msg.Chat.ID, "Authentication failed.")
+		b.SendMessage(msg.Chat.ID, "Authentication failed.", nil)
 		return
 	}
 
 	handler, ok := b.handlers[command]
 	if !ok {
-		b.SendMessage(msg.Chat.ID, fmt.Sprintf("Unknown command: /%s", command))
+		b.SendMessage(msg.Chat.ID, fmt.Sprintf("Unknown command: /%s", command), nil)
 		return
 	}
 
-	response, err := handler(ctx, user, args)
+	response, replyMarkup, err := handler(ctx, user, args)
 	if err != nil {
 		b.logger.Errorf("Command %s failed for user %d: %v", command, user.ID, err)
 		response = "An error occurred while processing your request."
 	}
 
 	b.logger.Infof("Sending response to user %d: %s", msg.Chat.ID, response)
-	if err := b.SendMessage(msg.Chat.ID, response); err != nil {
+	if err := b.SendMessage(msg.Chat.ID, response, replyMarkup); err != nil {
 		b.logger.Errorf("Failed to send message to chat %d: %v", msg.Chat.ID, err)
 	}
 }
@@ -430,18 +468,22 @@ func (b *Bot) processUpdate(update Update) {
 // Parameter/Value Input:
 //   - chatID: int64 — chat ID tujuan
 //   - text: string — text message
+//   - replyMarkup: interface{} — optional inline keyboard (bisa nil)
 // Function yang Dipanggil/Dikonsumsi:
 //   - httpClient.Do: dipanggil untuk kirim request ke Telegram API
 //   - json.Marshal: dipanggil untuk serialize request body
 // Output/Return Value:
 //   - error: error jika send gagal
-func (b *Bot) SendMessage(chatID int64, text string) error {
+func (b *Bot) SendMessage(chatID int64, text string, replyMarkup interface{}) error {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.token)
 
 	body := map[string]interface{}{
 		"chat_id":    chatID,
 		"text":       text,
 		"parse_mode": "Markdown",
+	}
+	if replyMarkup != nil {
+		body["reply_markup"] = replyMarkup
 	}
 	bodyJSON, _ := json.Marshal(body)
 
@@ -516,8 +558,9 @@ func (b *Bot) SetWebhook(url string) error {
 //   - Tidak ada function langsung
 // Output/Return Value:
 //   - string: welcome message
+//   - interface{}: inline keyboard (nil untuk handler ini)
 //   - error: selalu nil
-func (b *Bot) handleStart(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handleStart(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	return fmt.Sprintf(`*Selamat datang di NAFAS Bot!* 👋
 
 Halo %s!
@@ -541,7 +584,7 @@ Bukan signal group, bukan copy trading, bukan gambling.
 2. /profile — Cek status akun
 3. /setapikey — Setup API key exchange
 
-Ketik /help untuk melihat semua command.`, firstNameOrUsername(user)), nil
+Ketik /help untuk melihat semua command.`, firstNameOrUsername(user)), nil, nil
 }
 
 // handleHelp handles /help command
@@ -555,8 +598,9 @@ Ketik /help untuk melihat semua command.`, firstNameOrUsername(user)), nil
 //   - Tidak ada function langsung
 // Output/Return Value:
 //   - string: help message
+//   - interface{}: inline keyboard (nil untuk handler ini)
 //   - error: selalu nil
-func (b *Bot) handleHelp(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handleHelp(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	return `*📋 NAFAS Command List*
 
 *🟢 GETTING STARTED*
@@ -583,7 +627,7 @@ func (b *Bot) handleHelp(ctx context.Context, user *models.User, args string) (s
 • Hubungi admin untuk setup awal
 • Aktifkan auto-trade di /settings
 
-Butuh bantuan? Hubungi admin.`, nil
+Butuh bantuan? Hubungi admin.`, nil, nil
 }
 
 // handleDashboard handles /dashboard command
@@ -597,8 +641,9 @@ Butuh bantuan? Hubungi admin.`, nil
 //   - db.QueryRowContext: dipanggil untuk ambil user config
 // Output/Return Value:
 //   - string: dashboard message
+//   - interface{}: inline keyboard (nil)
 //   - error: error jika query gagal
-func (b *Bot) handleDashboard(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handleDashboard(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	autoTrade := "❌ Disabled"
 	apiKeySet := false
 	if b.db != nil {
@@ -630,7 +675,7 @@ WCH Balance: %s
 System:
 • Scanner: ✅ Running
 • AI: ✅ Online
-• Risk Guardian: ✅ Active%s`, firstNameOrUsername(user), autoTrade, user.WCHBalance.String(), balanceText), nil
+• Risk Guardian: ✅ Active%s`, firstNameOrUsername(user), autoTrade, user.WCHBalance.String(), balanceText), nil, nil
 }
 
 // handlePortfolio handles /portfolio command
@@ -644,17 +689,18 @@ System:
 //   - db.QueryContext: dipanggil untuk ambil asset inventory
 // Output/Return Value:
 //   - string: portfolio message
+//   - interface{}: inline keyboard (nil)
 //   - error: error jika query gagal
-func (b *Bot) handlePortfolio(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handlePortfolio(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	if b.db == nil {
-		return "*💼 Portfolio*\n\n📈 BTC: loading...\n📈 ETH: loading...\n📈 SOL: loading...", nil
+		return "*💼 Portfolio*\n\n📈 BTC: loading...\n📈 ETH: loading...\n📈 SOL: loading...", nil, nil
 	}
 
 	rows, err := b.db.QueryContext(ctx, `
 		SELECT asset, balance, locked_balance FROM asset_inventory WHERE user_id = $1 ORDER BY asset
 	`, user.ID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer rows.Close()
 
@@ -672,12 +718,12 @@ func (b *Bot) handlePortfolio(ctx context.Context, user *models.User, args strin
 		portfolio = []string{"No assets yet. Use /balance to sync."}
 	}
 
-	return fmt.Sprintf("*💼 Portfolio*\n\n%s\n\n*Total Value:* %s", strings.Join(portfolio, "\n"), totalBTC), nil
+	return fmt.Sprintf("*💼 Portfolio*\n\n%s\n\n*Total Value:* %s", strings.Join(portfolio, "\n"), totalBTC), nil, nil
 }
 
 // handleSettings handles /settings command
 // Nama Function: handleSettings
-// Deskripsi: Handler untuk command /settings.
+// Deskripsi: Handler untuk command /settings dengan inline keyboard untuk ubah pengaturan.
 // Parameter/Value Input:
 //   - ctx: context.Context — context
 //   - user: *models.User — user
@@ -686,73 +732,83 @@ func (b *Bot) handlePortfolio(ctx context.Context, user *models.User, args strin
 //   - db.QueryRowContext: dipanggil untuk ambil user config
 // Output/Return Value:
 //   - string: settings message
+//   - interface{}: inline keyboard markup
 //   - error: error jika query gagal
-func (b *Bot) handleSettings(ctx context.Context, user *models.User, args string) (string, error) {
-	if b.db == nil {
-		return `*⚙️ Settings*
-
-Max Risk/Trade: 1.0%
-Daily Loss Limit: $5.00
-Max Open Positions: 3
-
-*Notifications:*
-• Trade Alerts: ✅ On
-• Error Alerts: ✅ On
-• Daily Report: ⏰ 00:00
-
-*Auto Trading:* ❌ Disabled
-
-Contact admin to change settings.`, nil
-	}
-
-	var config models.UserConfig
-	err := b.db.QueryRowContext(ctx, `
-		SELECT max_risk_per_trade, daily_loss_limit, max_open_positions,
-			   notify_on_trade, notify_on_error, auto_trade_enabled
-		FROM user_configs WHERE user_id = $1
-	`, user.ID).Scan(&config.MaxRiskPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
-		&config.NotifyOnTrade, &config.NotifyOnError, &config.AutoTradeEnabled)
-
-	if err != nil {
-		return `*⚙️ Settings*
-
-No custom settings configured. Using defaults:
-• Max Risk/Trade: 1.0%
-• Daily Loss Limit: $5.00
-• Max Open Positions: 3
-
-Contact admin to change settings.`, nil
-	}
-
-	tradeAlerts := "❌ Off"
-	if config.NotifyOnTrade {
-		tradeAlerts = "✅ On"
-	}
-	errorAlerts := "❌ Off"
-	if config.NotifyOnError {
-		errorAlerts = "✅ On"
-	}
+func (b *Bot) handleSettings(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	// Default values
+	maxRisk := "1.0%"
+	dailyLoss := "5.0%"
+	maxPositions := 3
+	tradeAlerts := "✅ On"
+	errorAlerts := "✅ On"
 	autoTrade := "❌ Disabled"
-	if config.AutoTradeEnabled {
-		autoTrade = "✅ Enabled"
+
+	if b.db != nil {
+		var config models.UserConfig
+		err := b.db.QueryRowContext(ctx, `
+			SELECT COALESCE(max_risk_per_trade, 1.0), COALESCE(daily_loss_limit, 5.0), COALESCE(max_open_positions, 3),
+				   COALESCE(notify_on_trade, true), COALESCE(notify_on_error, true), COALESCE(auto_trade_enabled, false)
+			FROM user_configs WHERE user_id = $1
+		`, user.ID).Scan(&config.MaxRiskPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
+			&config.NotifyOnTrade, &config.NotifyOnError, &config.AutoTradeEnabled)
+
+		if err == nil {
+			maxRisk = config.MaxRiskPerTrade.String()
+			dailyLoss = config.DailyLossLimit.String()
+			maxPositions = config.MaxOpenPositions
+			if !config.NotifyOnTrade {
+				tradeAlerts = "❌ Off"
+			}
+			if !config.NotifyOnError {
+				errorAlerts = "❌ Off"
+			}
+			if config.AutoTradeEnabled {
+				autoTrade = "✅ Enabled"
+			}
+		}
+	}
+
+	// Inline keyboard untuk ubah settings
+	replyMarkup := map[string]interface{}{
+		"inline_keyboard": [][]map[string]string{
+			{
+				{"text": "🔄 Refresh", "callback_data": "settings_refresh"},
+			},
+			{
+				{"text": fmt.Sprintf("📊 Risk: %s%%", maxRisk), "callback_data": "settings_risk"},
+				{"text": fmt.Sprintf("📉 Daily Loss: %s%%", dailyLoss), "callback_data": "settings_dailyloss"},
+			},
+			{
+				{"text": fmt.Sprintf("📈 Max Pos: %d", maxPositions), "callback_data": "settings_maxpos"},
+			},
+			{
+				{"text": fmt.Sprintf("🔔 Trade Alerts: %s", tradeAlerts), "callback_data": "settings_tradealerts"},
+			},
+			{
+				{"text": fmt.Sprintf("⚠️ Error Alerts: %s", errorAlerts), "callback_data": "settings_erroralerts"},
+			},
+			{
+				{"text": fmt.Sprintf("🤖 Auto Trade: %s", autoTrade), "callback_data": "settings_autotrade"},
+			},
+		},
 	}
 
 	return fmt.Sprintf(`*⚙️ Settings*
 
-Max Risk/Trade: %s
-Daily Loss Limit: %s
-Max Open Positions: %d
+_Klik tombol di bawah untuk mengubah pengaturan._
+
+📊 Max Risk/Trade: %s%%
+📉 Daily Loss Limit: %s%%
+📈 Max Open Positions: %d
 
 *Notifications:*
-• Trade Alerts: %s
-• Error Alerts: %s
-• Daily Report: ⏰ 00:00
+🔔 Trade Alerts: %s
+⚠️ Error Alerts: %s
+⏰ Daily Report: ⏰ 00:00
 
-*Auto Trading:* %s
-
-Contact admin to change settings.`,
-		config.MaxRiskPerTrade.String(), config.DailyLossLimit.String(), config.MaxOpenPositions,
-		tradeAlerts, errorAlerts, autoTrade), nil
+*Auto Trading:* %s`,
+		maxRisk, dailyLoss, maxPositions,
+		tradeAlerts, errorAlerts, autoTrade), replyMarkup, nil
 }
 
 // handleStatus handles /status command
@@ -766,8 +822,9 @@ Contact admin to change settings.`,
 //   - db.PingContext: dipanggil untuk cek koneksi database
 // Output/Return Value:
 //   - string: status message
+//   - interface{}: inline keyboard (nil)
 //   - error: error jika check gagal
-func (b *Bot) handleStatus(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handleStatus(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	dbStatus := "❌ Disconnected"
 	if b.db != nil {
 		if err := b.db.PingContext(ctx); err == nil {
@@ -788,7 +845,7 @@ func (b *Bot) handleStatus(ctx context.Context, user *models.User, args string) 
 ✅ AI Service: ✅ Online
 ✅ Risk Guardian: ✅ Active
 
-*Last Sync:* %s`, dbStatus, exchangeStatus, time.Now().Format("15:04:05")), nil
+*Last Sync:* %s`, dbStatus, exchangeStatus, time.Now().Format("15:04:05")), nil, nil
 }
 
 // handlePositions handles /positions command
@@ -802,8 +859,9 @@ func (b *Bot) handleStatus(ctx context.Context, user *models.User, args string) 
 //   - db.QueryContext: dipanggil untuk ambil open orders
 // Output/Return Value:
 //   - string: positions message
+//   - interface{}: inline keyboard (nil)
 //   - error: error jika query gagal
-func (b *Bot) handlePositions(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handlePositions(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	if b.db == nil {
 		return `*📋 Open Positions*
 
@@ -811,7 +869,7 @@ No open positions.
 
 *Summary:*
 • Total P/L: $0.00
-• Win Rate: N/A`, nil
+• Win Rate: N/A`, nil, nil
 	}
 
 	rows, err := b.db.QueryContext(ctx, `
@@ -820,7 +878,7 @@ No open positions.
 		ORDER BY created_at DESC LIMIT 10
 	`, user.ID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer rows.Close()
 
@@ -842,10 +900,10 @@ No open positions.
 
 *Summary:*
 • Total P/L: $0.00
-• Win Rate: N/A`, nil
+• Win Rate: N/A`, nil, nil
 	}
 
-	return fmt.Sprintf("*📋 Open Positions*\n\n%s\n\n*Summary:*\n• Total P/L: $0.00\n• Win Rate: N/A", strings.Join(positions, "\n")), nil
+	return fmt.Sprintf("*📋 Open Positions*\n\n%s\n\n*Summary:*\n• Total P/L: $0.00\n• Win Rate: N/A", strings.Join(positions, "\n")), nil, nil
 }
 
 // handleSetAPIKey handles /setapikey command
@@ -860,9 +918,19 @@ No open positions.
 //   - db.ExecContext: dipanggil untuk INSERT/UPDATE ke tabel api_keys
 // Output/Return Value:
 //   - string: success/error message
+//   - interface{}: inline keyboard (nil)
 //   - error: error jika proses gagal
-func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	if args == "" {
+		// Inline keyboard dengan pilihan exchange
+		replyMarkup := map[string]interface{}{
+			"inline_keyboard": [][]map[string]string{
+				{
+					{"text": "🔶 Binance", "callback_data": "apikey_binance"},
+					{"text": "🟡 OKX", "callback_data": "apikey_okx"},
+				},
+			},
+		}
 		return "" +
 			"🔐 Set API Key\n\n" +
 			"Pilih exchange dan masukkan credential:\n\n" +
@@ -878,7 +946,7 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 			"Security Notice:\n" +
 			"• API keys dienkripsi dengan AES-256\n" +
 			"• Hanya butuh permission Trade (withdraw disabled)\n" +
-			"• Passphrase OKX juga Dienkripsi", nil
+			"• Passphrase OKX juga Dienkripsi", replyMarkup, nil
 	}
 
 	parts := strings.Fields(args)
@@ -888,7 +956,7 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 			"Format salah. Gunakan:\n" +
 			"/setapikey <exchange> <api_key> <api_secret> [passphrase]\n\n" +
 			"Contoh: /setapikey binance abc123 secret456\n" +
-			"Contoh OKX: /setapikey okx abc123 secret456 mypassphrase", nil
+			"Contoh OKX: /setapikey okx abc123 secret456 mypassphrase", nil, nil
 	}
 
 	exchange := strings.ToLower(parts[0])
@@ -901,7 +969,7 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 			return "" +
 				"🔐 Set API Key — Error\n\n" +
 				"OKX requires passphrase. Gunakan format:\n" +
-				"/setapikey okx <api_key> <api_secret> <passphrase>", nil
+				"/setapikey okx <api_key> <api_secret> <passphrase>", nil, nil
 		}
 		passphrase = parts[3]
 	} else if exchange != "binance" {
@@ -909,24 +977,24 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 			"🔐 Set API Key — Error\n\n" +
 			"Exchange tidak dikenal. Gunakan:\n" +
 			"• binance\n" +
-			"• okx", nil
+			"• okx", nil, nil
 	}
 
 	// Encrypt semua credential
 	encAPIKey, err := auth.Encrypt(apiKey)
 	if err != nil {
-		return "🔐 Set API Key — Error\n\nGagal mengenkripsi API key.", err
+		return "🔐 Set API Key — Error\n\nGagal mengenkripsi API key.", nil, err
 	}
 	encAPISecret, err := auth.Encrypt(apiSecret)
 	if err != nil {
-		return "🔐 Set API Key — Error\n\nGagal mengenkripsi API secret.", err
+		return "🔐 Set API Key — Error\n\nGagal mengenkripsi API secret.", nil, err
 	}
 
 	var encPassphrase *string
 	if passphrase != "" {
 		encP, err := auth.Encrypt(passphrase)
 		if err != nil {
-			return "🔐 Set API Key — Error\n\nGagal mengenkripsi passphrase.", err
+			return "🔐 Set API Key — Error\n\nGagal mengenkripsi passphrase.", nil, err
 		}
 		encPassphrase = &encP
 	}
@@ -944,7 +1012,7 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 			updated_at = CURRENT_TIMESTAMP
 	`, user.ID, exchange, encAPIKey, encAPISecret, encPassphrase)
 	if err != nil {
-		return "🔐 Set API Key — Error\n\nGagal menyimpan ke database.", err
+		return "🔐 Set API Key — Error\n\nGagal menyimpan ke database.", nil, err
 	}
 
 	maskedKey := MaskAPIKey(apiKey)
@@ -952,7 +1020,7 @@ func (b *Bot) handleSetAPIKey(ctx context.Context, user *models.User, args strin
 
 	return fmt.Sprintf(
 		"🔐 API Key Tersimpan✓\n\n"+"Exchange: %s\n"+"API Key: %s\n"+"Status: Active\n\n"+"Credential sudah dienkripsi dan disimpan.",
-		exchangeLabel, maskedKey), nil
+		exchangeLabel, maskedKey), nil, nil
 }
 
 // MaskAPIKey masks API key untuk tampilan aman
@@ -982,10 +1050,11 @@ func MaskAPIKey(key string) string {
 //   - exchange.GetBalances: dipanggil untuk ambil balance dari exchange
 // Output/Return Value:
 //   - string: balance message
+//   - interface{}: inline keyboard (nil)
 //   - error: error jika fetch gagal
-func (b *Bot) handleBalance(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handleBalance(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	if b.exchange == nil || b.db == nil {
-		return "*💰 Balance*\n\nExchange not configured.", nil
+		return "*💰 Balance*\n\nExchange not configured.", nil, nil
 	}
 
 	var apiKey models.APIKey
@@ -995,23 +1064,25 @@ func (b *Bot) handleBalance(ctx context.Context, user *models.User, args string)
 	`, user.ID).Scan(&apiKey.EncryptedAPIKey, &apiKey.EncryptedAPISecret)
 
 	if err != nil {
-		return "*💰 Balance*\n\nNo API key configured. Use /setapikey to add one.", nil
+		return "*💰 Balance*\n\nNo API key configured. Use /setapikey to add one.", nil, nil
 	}
 
 	// Decrypt API keys
 	apiKeyStr, err := auth.Decrypt(apiKey.EncryptedAPIKey)
 	if err != nil {
-		return "*💰 Balance*\n\nFailed to decrypt API key.", err
+		return "*💰 Balance*\n\nFailed to decrypt API key.", nil, err
 	}
 	apiSecret, err := auth.Decrypt(apiKey.EncryptedAPISecret)
 	if err != nil {
-		return "*💰 Balance*\n\nFailed to decrypt API secret.", err
+		return "*💰 Balance*\n\nFailed to decrypt API secret.", nil, err
 	}
 
 	// Get balances from exchange
 	balances, err := b.exchange.GetBalances(ctx, apiKeyStr, apiSecret)
 	if err != nil {
-		return "*💰 Balance*\n\nFailed to fetch balance.", err
+		// Log error internally but don't expose to user (may contain sensitive API details)
+		b.logger.WithError(err).WithField("user_id", user.ID).Warn("Failed to fetch balance from exchange")
+		return "*💰 Balance*\n\nGagal mengambil balance. Pastikan API key valid dan memiliki permission 'Enable Spot & Margin Trading'.", nil, nil
 	}
 
 	var balanceLines []string
@@ -1020,10 +1091,10 @@ func (b *Bot) handleBalance(ctx context.Context, user *models.User, args string)
 	}
 
 	if len(balanceLines) == 0 {
-		return "*💰 Balance*\n\nNo assets found.", nil
+		return "*💰 Balance*\n\nNo assets found.", nil, nil
 	}
 
-	return fmt.Sprintf("*💰 Exchange Balance*\n\n%s", strings.Join(balanceLines, "\n")), nil
+	return fmt.Sprintf("*💰 Exchange Balance*\n\n%s", strings.Join(balanceLines, "\n")), nil, nil
 }
 
 // handleGuide handles /guide command — comprehensive usage guide
@@ -1037,8 +1108,9 @@ func (b *Bot) handleBalance(ctx context.Context, user *models.User, args string)
 //   - Tidak ada function langsung
 // Output/Return Value:
 //   - string: panduan penggunaan lengkap
+//   - interface{}: inline keyboard (nil)
 //   - error: selalu nil
-func (b *Bot) handleGuide(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handleGuide(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	return `*📚 NAFAS Bot — Panduan Lengkap*
 
 *🟢 MEMULAI*
@@ -1048,7 +1120,7 @@ func (b *Bot) handleGuide(ctx context.Context, user *models.User, args string) (
 4. Dengan /setapikey untuk mulai
 
 *⚙️ KONFIGURASI PENTING*
-• /settings — Lihat & atur pengaturan
+• /settings — Lihat & ubah pengaturan
 • /setapikey — Setup API key exchange (self-service)
 • /profile — Lihat status & statistik akun
 
@@ -1085,7 +1157,7 @@ func (b *Bot) handleGuide(ctx context.Context, user *models.User, args string) (
 Start → Setup API Key → Konfigurasi
 → Aktifkan Auto-Trade → Monitoring
 
-Butuh bantuan? Hubungi admin.`, nil
+Butuh bantuan? Hubungi admin.`, nil, nil
 }
 
 // handleReport handles /report command — daily/weekly trading reports
@@ -1100,8 +1172,9 @@ Butuh bantuan? Hubungi admin.`, nil
 //   - db.QueryContext: dipanggil untuk ambil historical reports
 // Output/Return Value:
 //   - string: laporan trading
+//   - interface{}: inline keyboard (nil)
 //   - error: error jika query gagal
-func (b *Bot) handleReport(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handleReport(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	if b.db == nil {
 		return `*📊 Trading Report*
 
@@ -1114,7 +1187,7 @@ Show report from last known data.
 • Net BTC Growth: 0 BTC
 
 *📋 Recent Activity:*
-• No recent trades`, nil
+• No recent trades`, nil, nil
 	}
 
 	// Parse report type (daily/weekly)
@@ -1221,7 +1294,7 @@ Show report from last known data.
 
 *🕐 Generated:* %s
 
-Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTitle, totalTrades, completedTrades, winRate, netBTCGrowth, btcAccumulated, recentActivity, time.Now().Format("2006-01-02 15:04")), nil
+Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTitle, totalTrades, completedTrades, winRate, netBTCGrowth, btcAccumulated, recentActivity, time.Now().Format("2006-01-02 15:04")), nil, nil
 }
 
 // handleProfile handles /profile command — user profile & account status
@@ -1236,8 +1309,9 @@ Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTi
 //   - db.QueryContext: dipanggil untuk ambil statistics
 // Output/Return Value:
 //   - string: profil user lengkap
+//   - interface{}: inline keyboard (nil)
 //   - error: error jika query gagal
-func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string) (string, error) {
+func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
 	// Get user status
 	statusIcon := "🟢"
 	statusText := "Active"
@@ -1341,7 +1415,349 @@ Gunakan /settings untuk mengubah konfigurasi.`, user.TelegramID, username, statu
 		user.WCHBalance.String(), totalTrades, totalBTCAccumulated,
 		maxRisk, dailyLoss, maxPositions, autoTrade,
 		notifyTrade, notifyError,
-		"Contact admin to manage"), nil
+		"Contact admin to manage"), nil, nil
+}
+
+// handleCallbackQuery memproses callback query dari inline button.
+// Setiap callback data memiliki prefix untuk mengidentifikasi jenis action.
+// Nama Function: handleCallbackQuery
+// Deskripsi: Memproses callback query dari inline keyboard button.
+// Parameter/Value Input:
+//   - ctx: context.Context — context
+//   - user: *models.User — user yang menekan button
+//   - cbq: *CallbackQuery — callback query dari Telegram
+// Function yang Dipanggil/Dikonsumsi:
+//   - AnswerCallbackQuery: dipanggil untuk answer callback (hilangkan loading)
+//   - SendMessage: dipanggil untuk kirim response ke user
+//   - db.ExecContext: dipanggil untuk update konfigurasi user
+// Output/Return Value:
+//   - Tidak ada return value langsung
+func (b *Bot) handleCallbackQuery(ctx context.Context, user *models.User, cbq *CallbackQuery) {
+	data := cbq.Data
+
+	// Answer callback query untuk hentikan loading indicator
+	b.AnswerCallbackQuery(cbq.ID, "")
+
+	switch {
+	case data == "settings_refresh":
+		b.SendMessage(int64(cbq.From.ID), "🔄 Refreshing settings...", nil)
+		// Re-call handleSettings
+		response, markup, _ := b.handleSettings(ctx, user, "")
+		b.SendMessage(int64(cbq.From.ID), response, markup)
+
+	case data == "settings_risk":
+		b.SendMessage(int64(cbq.From.ID), `📊 *Ubah Max Risk/Trade*
+
+Masukkan nilai risk dalam persen (0.1 - 5.0):
+
+Contoh:1.5 untuk1.5%
+
+Ketik /setrisk <nilai> untuk mengubah.
+
+Contoh: /setrisk 2.0`, nil)
+
+	case data == "settings_dailyloss":
+		b.SendMessage(int64(cbq.From.ID), `📉 *Ubah Daily Loss Limit*
+
+Masukkan batas loss harian dalam persen:
+
+Contoh: 5 untuk 5% dari modal
+
+Ketik /setdailyloss <nilai> untuk mengubah.
+
+Contoh: /setdailyloss 5`, nil)
+
+	case data == "settings_maxpos":
+		b.SendMessage(int64(cbq.From.ID), `📈 *Ubah Max Open Positions*
+
+Masukkan jumlah maksimal posisi terbuka (1-10):
+
+Ketik /setmaxpos <nilai> untuk mengubah.
+
+Contoh: /setmaxpos 5`, nil)
+
+	case data == "settings_tradealerts":
+		if b.db != nil {
+			var current bool
+			err := b.db.QueryRowContext(ctx, `
+				SELECT COALESCE(notify_on_trade, true) FROM user_configs WHERE user_id = $1
+			`, user.ID).Scan(&current)
+			// If no row exists, current stays as default true
+			if err != nil && err != sql.ErrNoRows {
+				b.logger.Errorf("Failed to get trade alerts status: %v", err)
+			}
+			newValue := !current
+			_, err = b.db.ExecContext(ctx, `
+				INSERT INTO user_configs (user_id, notify_on_trade)
+				VALUES ($1, $2)
+				ON CONFLICT (user_id) DO UPDATE SET
+					notify_on_trade = EXCLUDED.notify_on_trade,
+					updated_at = CURRENT_TIMESTAMP
+			`, user.ID, newValue)
+			if err == nil {
+				status := "❌ Off"
+				if newValue {
+					status = "✅ On"
+				}
+				b.SendMessage(int64(cbq.From.ID), fmt.Sprintf("🔔 Trade Alerts设置为: %s", status), nil)
+			}
+		}
+		// Refresh settings display
+		response, markup, _ := b.handleSettings(ctx, user, "")
+		b.SendMessage(int64(cbq.From.ID), response, markup)
+
+	case data == "settings_erroralerts":
+		if b.db != nil {
+			var current bool
+			err := b.db.QueryRowContext(ctx, `
+				SELECT COALESCE(notify_on_error, true) FROM user_configs WHERE user_id = $1
+			`, user.ID).Scan(&current)
+			// If no row exists, current stays as default true
+			if err != nil && err != sql.ErrNoRows {
+				b.logger.Errorf("Failed to get error alerts status: %v", err)
+			}
+			newValue := !current
+			_, err = b.db.ExecContext(ctx, `
+				INSERT INTO user_configs (user_id, notify_on_error)
+				VALUES ($1, $2)
+				ON CONFLICT (user_id) DO UPDATE SET
+					notify_on_error = EXCLUDED.notify_on_error,
+					updated_at = CURRENT_TIMESTAMP
+			`, user.ID, newValue)
+			if err == nil {
+				status := "❌ Off"
+				if newValue {
+					status = "✅ On"
+				}
+				b.SendMessage(int64(cbq.From.ID), fmt.Sprintf("⚠️ Error Alerts设置为: %s", status), nil)
+			}
+		}
+		// Refresh settings display
+		response, markup, _ := b.handleSettings(ctx, user, "")
+		b.SendMessage(int64(cbq.From.ID), response, markup)
+
+	case data == "settings_autotrade":
+		if b.db != nil {
+			var current bool
+			err := b.db.QueryRowContext(ctx, `
+				SELECT COALESCE(auto_trade_enabled, false) FROM user_configs WHERE user_id = $1
+			`, user.ID).Scan(&current)
+			// If no row exists, current stays as default false
+			if err != nil && err != sql.ErrNoRows {
+				b.logger.Errorf("Failed to get auto trade status: %v", err)
+			}
+			newValue := !current
+			_, err = b.db.ExecContext(ctx, `
+				INSERT INTO user_configs (user_id, auto_trade_enabled)
+				VALUES ($1, $2)
+				ON CONFLICT (user_id) DO UPDATE SET
+					auto_trade_enabled = EXCLUDED.auto_trade_enabled,
+					updated_at = CURRENT_TIMESTAMP
+			`, user.ID, newValue)
+			if err == nil {
+				status := "❌ Disabled"
+				if newValue {
+					status = "✅ Enabled"
+				}
+				b.SendMessage(int64(cbq.From.ID), fmt.Sprintf("🤖 Auto Trade设置为: %s", status), nil)
+			}
+		}
+		// Refresh settings display
+		response, markup, _ := b.handleSettings(ctx, user, "")
+		b.SendMessage(int64(cbq.From.ID), response, markup)
+
+	case data == "apikey_binance":
+		b.SendMessage(int64(cbq.From.ID), `🔶 *Binance API Key Setup*
+
+Masukkan credential dengan format:
+
+/setapikey binance <api_key> <api_secret>
+
+Contoh:
+/setapikey binance abc123XYZ secret456ABC
+
+💡 Tips:
+• API key hanya butuh permission Trade
+• Withdraw harus disabled
+• Key dienkripsi dengan AES-256`, nil)
+
+	case data == "apikey_okx":
+		b.SendMessage(int64(cbq.From.ID), `🟡 *OKX API Key Setup*
+
+Masukkan credential dengan format:
+
+/setapikey okx <api_key> <api_secret> <passphrase>
+
+Contoh:
+/setapikey okx abc123XYZ secret456ABC mypassphrase
+
+💡 Tips:
+• API key butuh passphrase
+• Hanya butuh permission Trade
+• Withdraw harus disabled`, nil)
+
+	default:
+		b.SendMessage(int64(cbq.From.ID), "Unknown action.", nil)
+	}
+}
+
+// AnswerCallbackQuery menjawab callback query untuk hentikan loading indicator.
+// Nama Function: AnswerCallbackQuery
+// Deskripsi: Mengirim answer ke callback query untuk hentikan loading di Telegram.
+// Parameter/Value Input:
+//   - callbackID: string — ID dari callback query
+//   - text: string — text untuk ditampilkan (opsional, kosongkan untuk sembunyikan)
+// Function yang Dipanggil/Dikonsumsi:
+//   - httpClient.Do: dipanggil untuk kirim request ke Telegram API
+// Output/Return Value:
+//   - error: error jika request gagal
+func (b *Bot) AnswerCallbackQuery(callbackID string, text string) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/answerCallbackQuery", b.token)
+
+	body := map[string]interface{}{
+		"callback_query_id": callbackID,
+	}
+	if text != "" {
+		body["text"] = text
+	}
+	bodyJSON, _ := json.Marshal(body)
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyJSON))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+// handleSetRisk handles /setrisk command untuk ubah max risk per trade.
+// Nama Function: handleSetRisk
+// Deskripsi: Handler untuk command /setrisk — mengubah max risk per trade.
+// Parameter/Value Input:
+//   - ctx: context.Context — context
+//   - user: *models.User — user
+//   - args: string — nilai risk dalam persen (contoh: "1.5")
+// Function yang Dipanggil/Dikonsumsi:
+//   - db.ExecContext: dipanggil untuk UPSERT user_configs
+// Output/Return Value:
+//   - string: success/error message
+//   - interface{}: inline keyboard (nil)
+//   - error: error jika proses gagal
+func (b *Bot) handleSetRisk(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	if args == "" {
+		return "📊 *Set Risk — Error*\n\nUsage: /setrisk <nilai>\n\nContoh: /setrisk 1.5\n\nNilai harus antara 0.1 - 5.0%", nil, nil
+	}
+
+	risk, err := decimalFromString(args)
+	if err != nil || risk.LessThan(decimal.NewFromFloat(0.1)) || risk.GreaterThan(decimal.NewFromFloat(5.0)) {
+		return "📊 *Set Risk — Error*\n\nNilai tidak valid. Masukkan angka antara 0.1 - 5.0\n\nContoh: /setrisk 1.5", nil, nil
+	}
+
+	if b.db != nil {
+		_, err = b.db.ExecContext(ctx, `
+			INSERT INTO user_configs (user_id, max_risk_per_trade)
+			VALUES ($1, $2)
+			ON CONFLICT (user_id) DO UPDATE SET
+				max_risk_per_trade = EXCLUDED.max_risk_per_trade,
+				updated_at = CURRENT_TIMESTAMP
+		`, user.ID, risk)
+		if err != nil {
+			return "📊 *Set Risk — Error*\n\nGagal menyimpan pengaturan.", nil, err
+		}
+	}
+
+	return fmt.Sprintf("📊 *Risk Updated*\n\nMax Risk/Trade: %s%%\n\n✅ Pengaturan berhasil disimpan.", risk.String()), nil, nil
+}
+
+// handleSetDailyLoss handles /setdailyloss command untuk ubah daily loss limit.
+// Nama Function: handleSetDailyLoss
+// Deskripsi: Handler untuk command /setdailyloss — mengubah batas loss harian dalam persen.
+// Parameter/Value Input:
+//   - ctx: context.Context — context
+//   - user: *models.User — user
+//   - args: string — nilai limit dalam persen (contoh: "5" untuk 5%)
+// Function yang Dipanggil/Dikonsumsi:
+//   - db.ExecContext: dipanggil untuk UPSERT user_configs
+// Output/Return Value:
+//   - string: success/error message
+//   - interface{}: inline keyboard (nil)
+//   - error: error jika proses gagal
+func (b *Bot) handleSetDailyLoss(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	if args == "" {
+		return "📉 *Set Daily Loss — Error*\n\nUsage: /setdailyloss <nilai>\n\nContoh: /setdailyloss 5\n\nNilai dalam persen (1-20%)", nil, nil
+	}
+
+	loss, err := decimalFromString(args)
+	if err != nil || loss.LessThan(decimal.NewFromFloat(1)) || loss.GreaterThan(decimal.NewFromFloat(20)) {
+		return "📉 *Set Daily Loss — Error*\n\nNilai tidak valid. Masukkan angka antara 1 - 20%\n\nContoh: /setdailyloss 5", nil, nil
+	}
+
+	if b.db != nil {
+		_, err = b.db.ExecContext(ctx, `
+			INSERT INTO user_configs (user_id, daily_loss_limit)
+			VALUES ($1, $2)
+			ON CONFLICT (user_id) DO UPDATE SET
+				daily_loss_limit = EXCLUDED.daily_loss_limit,
+				updated_at = CURRENT_TIMESTAMP
+		`, user.ID, loss)
+		if err != nil {
+			return "📉 *Set Daily Loss — Error*\n\nGagal menyimpan pengaturan.", nil, err
+		}
+	}
+
+	return fmt.Sprintf("📉 *Daily Loss Updated*\n\nDaily Loss Limit: %s%%\n\n✅ Pengaturan berhasil disimpan.", loss.String()), nil, nil
+}
+
+// handleSetMaxPositions handles /setmaxpos command untuk ubah max open positions.
+// Nama Function: handleSetMaxPositions
+// Deskripsi: Handler untuk command /setmaxpos — mengubah maksimal posisi terbuka.
+// Parameter/Value Input:
+//   - ctx: context.Context — context
+//   - user: *models.User — user
+//   - args: string — jumlah posisi (contoh: "5")
+// Function yang Dipanggil/Dikonsumsi:
+//   - db.ExecContext: dipanggil untuk UPSERT user_configs
+// Output/Return Value:
+//   - string: success/error message
+//   - interface{}: inline keyboard (nil)
+//   - error: error jika proses gagal
+func (b *Bot) handleSetMaxPositions(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	if args == "" {
+		return "📈 *Set Max Positions — Error*\n\nUsage: /setmaxpos <nilai>\n\nContoh: /setmaxpos 5\n\nNilai harus antara 1 - 10", nil, nil
+	}
+
+	positions, err := strconv.Atoi(strings.TrimSpace(args))
+	if err != nil || positions < 1 || positions > 10 {
+		return "📈 *Set Max Positions — Error*\n\nNilai tidak valid. Masukkan angka antara 1 - 10\n\nContoh: /setmaxpos 5", nil, nil
+	}
+
+	if b.db != nil {
+		_, err = b.db.ExecContext(ctx, `
+			INSERT INTO user_configs (user_id, max_open_positions)
+			VALUES ($1, $2)
+			ON CONFLICT (user_id) DO UPDATE SET
+				max_open_positions = EXCLUDED.max_open_positions,
+				updated_at = CURRENT_TIMESTAMP
+		`, user.ID, positions)
+		if err != nil {
+			return "📈 *Set Max Positions — Error*\n\nGagal menyimpan pengaturan.", nil, err
+		}
+	}
+
+	return fmt.Sprintf("📈 *Max Positions Updated*\n\nMax Open Positions: %d\n\n✅ Pengaturan berhasil disimpan.", positions), nil, nil
+}
+
+// decimalFromString converts string to decimal.Decimal safely
+func decimalFromString(s string) (decimal.Decimal, error) {
+	s = strings.TrimSpace(s)
+	return decimal.NewFromString(s)
 }
 
 // Helper functions

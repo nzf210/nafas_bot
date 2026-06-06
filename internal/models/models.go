@@ -109,8 +109,8 @@ type SystemSetting struct {
 // Nama Function: UserConfig
 // Deskripsi: Struct yang merepresentasikan tabel user_configs untuk pengaturan trading user.
 // Parameter/Value Input:
-//   - MaxRiskPerTrade: decimal — max risk per trade dalam persen
-//   - DailyLossLimit: decimal — batas loss harian dalam USD
+//   - MaxRiskPerTrade: decimal — max risk per trade dalam persen (0.1-5.0)
+//   - DailyLossLimit: decimal — batas loss harian dalam persen dari modal (1-20)
 //   - MaxOpenPositions: int — maksimal posisi terbuka
 //   - NotifyOnTrade, NotifyOnError: bool — notifikasi Telegram
 //   - AutoTradeEnabled: bool — apakah auto trading aktif
