@@ -62,6 +62,10 @@ func Load() (*Config, error) {
 	c.LLMProviderURL = getEnv("LLM_PROVIDER_URL", "https://api.openai.com/v1")
 	c.LLMAPIKey = getEnv("LLM_API_KEY", "")
 	c.LLMModel = getEnv("LLM_MODEL", "gpt-4o")
+	c.LLMBaseURL = getEnv("LLM_BASE_URL", "") // Custom LLM base URL (Ollama, LM Studio, dll)
+
+	// TradingAgents
+	c.TradingAgentsURL = getEnv("TRADING_AGENTS_URL", "http://localhost:8000")
 
 	// Log
 	c.LogLevel = getEnv("LOG_LEVEL", "info")
@@ -107,6 +111,10 @@ type Config struct {
 	LLMProviderURL string
 	LLMAPIKey      string
 	LLMModel       string
+	LLMBaseURL string // Custom LLM base URL (Ollama, LM Studio, dll)
+
+	// TradingAgents
+	TradingAgentsURL string
 
 	// Log
 	LogLevel string
