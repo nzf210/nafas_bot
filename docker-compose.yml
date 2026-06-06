@@ -65,7 +65,7 @@ services:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL}
       - LLM_BASE_URL=${LLM_BASE_URL}
-      - TRADING_AGENTS_URL=http://trading-agents:8000
+      - TRADING_AGENTS_URL=http://trading-agents:8889
     depends_on:
       redis:
         condition: service_healthy
