@@ -1,28 +1,35 @@
-# NAFAS TradingAgents Dockerfile
 FROM python:3.11-slim
 
+# Set working directory
 WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install
+# Upgrade pip tooling (tanpa ribet versi berlebihan)
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Clone TradingAgents source langsung dari GitHub
+RUN git clone https://github.com/tauricresearch/tradingagents.git /opt/tradingagents
+
+# Copy requirements
 COPY requirements.txt .
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install --default-timeout=1000 --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY main.py .
+# Install dependencies aplikasi utama
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Expose port
+# Install TradingAgents dari source (editable mode lebih fleksibel)
+RUN pip install -e /opt/tradingagents
+
+# Copy source code aplikasi
+COPY . .
+
+# Expose port API (ubah jika perlu)
 EXPOSE 8000
 
-# Environment variables
-ENV LLM_BASE_URL=https://api.openai.com/v1
-ENV LLM_MODEL=gpt-4o
-
-# Run the service
+# Jalankan API
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

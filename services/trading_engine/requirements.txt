@@ -6,7 +6,7 @@ uvicorn[standard]>=0.24.0
 pydantic>=2.0.0
 
 # TradingAgents
-tradingagents>=0.1.0
+# tradingagents>=0.1.0
 
 # Optional: untuk local LLM (Ollama)
 # ollama>=0.1.0
