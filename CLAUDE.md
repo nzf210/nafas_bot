@@ -468,7 +468,7 @@ Cross-chain trading, DEX integration, AI portfolio rotation engine, agent market
 Berikut adalah pengaturan parameter spesifik pada file `.env` yang digunakan untuk mengontrol perilaku bot:
 
 ### Limitasi Sistem & Pengguna
-- `MAX_PAIRS_PER_USER` (default: 10): Mengatur jumlah maksimal pair yang bisa dipantau oleh setiap pengguna.
+- `MAX_PAIRS_PER_USER` (default: 200): Mengatur jumlah maksimal pair yang bisa dipantau oleh setiap pengguna.
   - **Jika dikecilkan**: Server lebih ringan, scanning lebih cepat, namun user tidak bebas memantau banyak koin.
   - **Jika dibesarkan**: User bisa memantau puluhan koin sekaligus, namun beban `scanner` dan request ke Exchange API akan melonjak drastis, berisiko *rate limit*.
 

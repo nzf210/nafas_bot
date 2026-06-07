@@ -77,7 +77,7 @@ func Load() (*Config, error) {
 	c.DefaultMaxAllocationPerTrade, _ = strconv.ParseFloat(getEnv("DEFAULT_MAX_ALLOCATION_PER_TRADE", "50.0"), 64)
 	c.DefaultDailyLossLimit, _ = strconv.ParseFloat(getEnv("DEFAULT_DAILY_LOSS_LIMIT", "5.0"), 64)
 	c.DefaultMaxOpenPositions, _ = strconv.Atoi(getEnv("DEFAULT_MAX_OPEN_POSITIONS", "3"))
-	c.MaxPairsPerUser, _ = strconv.Atoi(getEnv("MAX_PAIRS_PER_USER", "10"))
+	c.MaxPairsPerUser, _ = strconv.Atoi(getEnv("MAX_PAIRS_PER_USER", "200"))
 
 	// AI Trading Thresholds
 	c.MinConfidenceThreshold, _ = strconv.ParseFloat(getEnv("MIN_CONFIDENCE_THRESHOLD", "70.0"), 64)
