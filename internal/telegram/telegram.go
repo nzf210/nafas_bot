@@ -732,7 +732,26 @@ func (b *Bot) handleAddPair(ctx context.Context, user *models.User, args string)
 	var skipped []string
 	limitReached := false
 	for _, sym := range parts[1:] {
+		// Normalize symbol based on exchange
 		symbol := strings.ToUpper(sym)
+		symbol = strings.ReplaceAll(symbol, "/", "") // Remove slashes in any case
+
+		switch exchangeName {
+		case "Binance":
+			symbol = strings.ReplaceAll(symbol, "-", "") // Binance: BTCUSDT
+		case "OKX":
+			// OKX: BTC-USDT. If no hyphen exists, try to inject it before quote asset (basic assumption for USDT/USDC/BTC)
+			if !strings.Contains(symbol, "-") {
+				if strings.HasSuffix(symbol, "USDT") {
+					symbol = strings.TrimSuffix(symbol, "USDT") + "-USDT"
+				} else if strings.HasSuffix(symbol, "USDC") {
+					symbol = strings.TrimSuffix(symbol, "USDC") + "-USDC"
+				} else if strings.HasSuffix(symbol, "BTC") && symbol != "BTC" {
+					symbol = strings.TrimSuffix(symbol, "BTC") + "-BTC"
+				}
+			}
+		}
+
 		if existingPairsMap[symbol] {
 			skipped = append(skipped, symbol)
 			continue
@@ -794,7 +813,25 @@ func (b *Bot) handleRemovePair(ctx context.Context, user *models.User, args stri
 
 	var removed []string
 	for _, sym := range parts[1:] {
+		// Normalize symbol based on exchange
 		symbol := strings.ToUpper(sym)
+		symbol = strings.ReplaceAll(symbol, "/", "")
+
+		switch exchangeName {
+		case "Binance":
+			symbol = strings.ReplaceAll(symbol, "-", "")
+		case "OKX":
+			if !strings.Contains(symbol, "-") {
+				if strings.HasSuffix(symbol, "USDT") {
+					symbol = strings.TrimSuffix(symbol, "USDT") + "-USDT"
+				} else if strings.HasSuffix(symbol, "USDC") {
+					symbol = strings.TrimSuffix(symbol, "USDC") + "-USDC"
+				} else if strings.HasSuffix(symbol, "BTC") && symbol != "BTC" {
+					symbol = strings.TrimSuffix(symbol, "BTC") + "-BTC"
+				}
+			}
+		}
+
 		b.pairManager.RemoveUserPair(user.ID.String(), exchangeName, symbol)
 		removed = append(removed, symbol)
 	}
@@ -2065,8 +2102,10 @@ func (b *Bot) handleSetRisk(ctx context.Context, user *models.User, args string)
 //   - ctx: context.Context — context untuk operasi database
 //   - user: *models.User — user yang mengirim command
 //   - args: string — persentase alokasi, e.g. "50"
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - db.ExecContext: dipanggil untuk upsert ke user_configs
+//
 // Output/Return Value:
 //   - string: success/error message
 //   - interface{}: inline keyboard (nil)
