@@ -56,15 +56,16 @@ const (
 // Output/Return Value:
 //   - Orchestrator: struct orchestration service
 type Orchestrator struct {
-	db       *sql.DB
-	exchange exchange.Exchange
-	scanner  *scanner.Scanner
-	ai       *ai.TradingAgentsClient
-	engine   *strategy.StrategyEngine
-	logger   *logger.Logger
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
-	config   *config.Config
+	db          *sql.DB
+	exchange    exchange.Exchange
+	scanner     *scanner.Scanner
+	ai          *ai.TradingAgentsClient
+	engine      *strategy.StrategyEngine
+	logger      *logger.Logger
+	stopCh      chan struct{}
+	wg          sync.WaitGroup
+	config      *config.Config
+	pairManager *scanner.PairManager
 }
 
 // NewOrchestrator creates a new multi-account orchestrator
@@ -77,22 +78,24 @@ type Orchestrator struct {
 //   - taClient: *ai.TradingAgentsClient — TradingAgents AI client
 //   - eng: *strategy.StrategyEngine — strategy engine
 //   - cfg: *config.Config — application configuration
+//   - pm: *scanner.PairManager — pair manager untuk sync user pairs ke scanner
 //
 // Function yang Dipanggil/Dikonsumsi:
 //   - Tidak ada function langsung, hanya inisialisasi
 //
 // Output/Return Value:
 //   - *Orchestrator: pointer ke orchestrator instance
-func NewOrchestrator(db *sql.DB, exch exchange.Exchange, scan *scanner.Scanner, taClient *ai.TradingAgentsClient, eng *strategy.StrategyEngine, cfg *config.Config) *Orchestrator {
+func NewOrchestrator(db *sql.DB, exch exchange.Exchange, scan *scanner.Scanner, taClient *ai.TradingAgentsClient, eng *strategy.StrategyEngine, cfg *config.Config, pm *scanner.PairManager) *Orchestrator {
 	return &Orchestrator{
-		db:       db,
-		exchange: exch,
-		scanner:  scan,
-		ai:       taClient,
-		engine:   eng,
-		logger:   logger.Default().WithField("module", "orchestrator"),
-		stopCh:   make(chan struct{}),
-		config:   cfg,
+		db:          db,
+		exchange:    exch,
+		scanner:     scan,
+		ai:          taClient,
+		engine:      eng,
+		logger:      logger.Default().WithField("module", "orchestrator"),
+		stopCh:      make(chan struct{}),
+		config:      cfg,
+		pairManager: pm,
 	}
 }
 
@@ -176,6 +179,7 @@ func (o *Orchestrator) worker(ctx context.Context) {
 //
 // Function yang Dipanggil/Dikonsumsi:
 //   - GetActiveUsers: dipanggil untuk ambil list user aktif
+//   - SyncUserPairsToScanner: dipanggil untuk sync user pairs ke scanner
 //   - ScanMarket: dipanggil untuk scan market data
 //   - ProcessUser: dipanggil untuk setiap user secara concurrent
 //
@@ -196,6 +200,9 @@ func (o *Orchestrator) runCycle(ctx context.Context) error {
 		return nil
 	}
 	o.logger.Infof("Found %d users with auto-trade enabled", len(users))
+
+	// Sync user pairs to scanner BEFORE market scan
+	o.syncUserPairsToScanner(ctx, users)
 
 	// Scan market data ONCE for all users
 	marketData := o.ScanMarket(ctx)
@@ -229,6 +236,55 @@ func (o *Orchestrator) runCycle(ctx context.Context) error {
 	o.logger.Infof("Trading cycle completed in %v", duration)
 
 	return cycleErr
+}
+
+// syncUserPairsToScanner syncs all user pairs to the scanner before market scan.
+// This ensures that user-configured pairs (e.g., SOLBTC, NEARBTC) are scanned
+// along with the default system pairs.
+// Nama Function: syncUserPairsToScanner
+// Deskripsi: Mensinkronkan semua user pairs ke scanner sebelum market scan.
+// Ini memastikan bahwa user-configured pairs (e.g., SOLBTC, NEARBTC) di-scan
+//   bersama dengan default system pairs.
+//
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk database operation
+//   - users: []models.User — list user aktif
+//
+// Function yang Dipanggil/Dikonsumsi:
+//   - GetUserContext: dipanggil untuk ambil user context dan pairs
+//   - scanner.AddSymbol: dipanggil untuk tambahkan symbol ke scanner
+//
+// Output/Return Value:
+//   - Tidak ada return value langsung
+func (o *Orchestrator) syncUserPairsToScanner(ctx context.Context, users []models.User) {
+	if o.pairManager == nil {
+		o.logger.Warn("PairManager not configured, skipping user pair sync")
+		return
+	}
+
+	// Collect all unique pairs from all users
+	allPairs := make(map[string]bool)
+	for _, user := range users {
+		userCtx, err := GetUserContext(ctx, o.db, &user)
+		if err != nil || userCtx == nil {
+			continue
+		}
+
+		for _, pair := range userCtx.Pairs {
+			allPairs[pair.Symbol] = true
+		}
+	}
+
+	// Add each unique pair to the scanner
+	addedCount := 0
+	for symbol := range allPairs {
+		o.scanner.AddSymbol(symbol)
+		addedCount++
+	}
+
+	if addedCount > 0 {
+		o.logger.Infof("Synced %d user pairs to scanner", addedCount)
+	}
 }
 
 // GetActiveUsers retrieves all users with auto-trade enabled
@@ -373,7 +429,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 		}
 
 		// Prepare market data for AI
-		marketDataMap := map[string]interface{}{
+		marketDataMap := map[string]any{
 			"symbol":       data.Symbol,
 			"latest_price": data.LatestPrice.String(),
 			"volume_24h":   data.Volume24h.String(),
@@ -392,13 +448,10 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 
 		// 2. Check Volatility (Last 3 candles, e.g. 15m if interval is 5m)
 		if len(data.Candles) > 0 {
-			var minLow = data.Candles[len(data.Candles)-1].Low
-			var maxHigh = data.Candles[len(data.Candles)-1].High
+			minLow := data.Candles[len(data.Candles)-1].Low
+			maxHigh := data.Candles[len(data.Candles)-1].High
 
-			startIdx := len(data.Candles) - 3
-			if startIdx < 0 {
-				startIdx = 0
-			}
+			startIdx := max(0, len(data.Candles)-3)
 
 			for i := startIdx; i < len(data.Candles); i++ {
 				if data.Candles[i].Low.LessThan(minLow) {
@@ -505,7 +558,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			userLogger.WithField("symbol", pair.Symbol).Warn("Latest price is invalid, skipping")
 			continue
 		}
-		
+
 		positionSizeBase := positionSizeQuote.Div(data.LatestPrice)
 
 		// Execute trade
@@ -537,7 +590,7 @@ func (o *Orchestrator) logAIDecision(ctx context.Context, user *models.User, sym
 		return
 	}
 
-	inputCtx, _ := json.Marshal(map[string]interface{}{
+	inputCtx, _ := json.Marshal(map[string]any{
 		"symbol":  symbol,
 		"user_id": user.ID,
 	})

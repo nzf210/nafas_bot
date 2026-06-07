@@ -153,7 +153,7 @@ func main() {
 	var tradingOrchestrator *orchestrator.Orchestrator
 	if cfg.TradingAgentsURL != "" {
 		strategyEngine := strategy.NewStrategyEngine(db)
-		tradingOrchestrator = orchestrator.NewOrchestrator(db, binanceClient, marketScanner, taClient, strategyEngine, cfg)
+		tradingOrchestrator = orchestrator.NewOrchestrator(db, binanceClient, marketScanner, taClient, strategyEngine, cfg, pairManager)
 		tradingOrchestrator.Start(context.Background())
 		logg.Info("Multi-account trading orchestrator started")
 	}
