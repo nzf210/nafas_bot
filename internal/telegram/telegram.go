@@ -983,12 +983,12 @@ func (b *Bot) handleSettings(ctx context.Context, user *models.User, args string
 	tradeAlerts := "✅ On"
 	errorAlerts := "✅ On"
 	autoTrade := "❌ Disabled"
-	maxAllocation := "50.0"
+	maxAllocation := "10.0"
 
 	if b.db != nil {
 		var config models.UserConfig
 		err := b.db.QueryRowContext(ctx, `
-			SELECT COALESCE(max_risk_per_trade, 1.0), COALESCE(max_allocation_per_trade, 50.0), COALESCE(daily_loss_limit, 5.0), COALESCE(max_open_positions, 3),
+			SELECT COALESCE(max_risk_per_trade, 1.0), COALESCE(max_allocation_per_trade, 10.0), COALESCE(daily_loss_limit, 5.0), COALESCE(max_open_positions, 3),
 				   COALESCE(notify_on_trade, true), COALESCE(notify_on_error, true), COALESCE(auto_trade_enabled, false)
 			FROM user_configs WHERE user_id = $1
 		`, user.ID).Scan(&config.MaxRiskPerTrade, &config.MaxAllocationPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
@@ -1728,7 +1728,7 @@ func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string)
 	notifyTrade := "❌ Off"
 	notifyError := "❌ Off"
 	maxRisk := "1.0%"
-	maxAlloc := "50.0%"
+	maxAlloc := "10.0%"
 	dailyLoss := "5.00"
 	maxPositions := "3"
 
@@ -2146,9 +2146,10 @@ func (b *Bot) handleSetAllocation(ctx context.Context, user *models.User, args s
 			ON CONFLICT (user_id) DO UPDATE SET
 				max_allocation_per_trade = EXCLUDED.max_allocation_per_trade,
 				updated_at = CURRENT_TIMESTAMP
-		`, user.ID, alloc)
+		`, user.ID.String(), alloc.String())
 		if err != nil {
-			return "📊 *Set Allocation — Error*\n\nGagal menyimpan pengaturan.", nil, err
+			// Return nil for error so processCommand doesn't override our detailed message
+			return fmt.Sprintf("📊 *Set Allocation — Error*\n\nGagal menyimpan pengaturan: %v", err), nil, nil
 		}
 	}
 
@@ -2187,9 +2188,9 @@ func (b *Bot) handleSetDailyLoss(ctx context.Context, user *models.User, args st
 			ON CONFLICT (user_id) DO UPDATE SET
 				daily_loss_limit = EXCLUDED.daily_loss_limit,
 				updated_at = CURRENT_TIMESTAMP
-		`, user.ID, loss)
+		`, user.ID.String(), loss.String())
 		if err != nil {
-			return "📉 *Set Daily Loss — Error*\n\nGagal menyimpan pengaturan.", nil, err
+			return fmt.Sprintf("📉 *Set Daily Loss — Error*\n\nGagal menyimpan pengaturan: %v", err), nil, nil
 		}
 	}
 
@@ -2228,9 +2229,9 @@ func (b *Bot) handleSetMaxPositions(ctx context.Context, user *models.User, args
 			ON CONFLICT (user_id) DO UPDATE SET
 				max_open_positions = EXCLUDED.max_open_positions,
 				updated_at = CURRENT_TIMESTAMP
-		`, user.ID, positions)
+		`, user.ID.String(), positions)
 		if err != nil {
-			return "📈 *Set Max Positions — Error*\n\nGagal menyimpan pengaturan.", nil, err
+			return fmt.Sprintf("📈 *Set Max Positions — Error*\n\nGagal menyimpan pengaturan: %v", err), nil, nil
 		}
 	}
 
