@@ -272,6 +272,7 @@ func (b *Bot) RegisterDefaultHandlers() {
 	b.Register("balance", b.handleBalance)
 	b.Register("report", b.handleReport)
 	b.Register("setreport", b.handleSetReport)
+	b.Register("mypairs", b.handleMyPairs)
 	b.Register("profile", b.handleProfile)
 	b.Register("setapikey", b.handleSetAPIKey)
 	b.Register("api", b.handleSetAPIKey)
@@ -675,8 +676,9 @@ func (b *Bot) handleHelp(ctx context.Context, user *models.User, args string) (s
 /setapikey - Setup API key exchange (self-service)
 
 *⚙️ SETTINGS*
-/addpair - Menambah pair baru untuk discan (contoh: /addpair Binance ADAUSDT)
-/removepair - Menghapus pair (contoh: /removepair Binance ADAUSDT)
+/mypairs - Melihat daftar pair yang Anda pantau
+/addpair - Menambah satu/lebih pair (contoh: /addpair Binance ADAUSDT BTCUSDT)
+/removepair - Menghapus satu/lebih pair (contoh: /removepair Binance ADAUSDT)
 /setreport - Mengatur interval laporan (contoh: /setreport 5m, 1h, 24h)
 
 *💡 Quick Tips:*
@@ -696,14 +698,26 @@ func (b *Bot) handleAddPair(ctx context.Context, user *models.User, args string)
 
 	parts := strings.Fields(args)
 	if len(parts) < 2 {
-		return "⚠️ Format salah.\nGunakan: `/addpair <exchange> <pair>`\nContoh: `/addpair Binance ADAUSDT`", nil, nil
+		return "⚠️ Format salah.\nGunakan: `/addpair <exchange> <pair1> <pair2>...`\nContoh: `/addpair Binance ADAUSDT BTCUSDT`", nil, nil
 	}
 
-	exchangeName := parts[0]
-	symbol := strings.ToUpper(parts[1])
+	exchangeName := strings.ToUpper(parts[0])
+	if exchangeName == "BINANCE" {
+		exchangeName = "Binance"
+	} else if exchangeName == "OKX" {
+		exchangeName = "OKX"
+	} else {
+		return "⚠️ Exchange tidak valid. Saat ini hanya mendukung: `Binance`, `OKX`.", nil, nil
+	}
 
-	b.pairManager.AddUserPair(user.ID.String(), exchangeName, symbol)
-	return fmt.Sprintf("✅ Pair *%s* pada exchange *%s* berhasil ditambahkan ke list Anda.", symbol, exchangeName), nil, nil
+	var added []string
+	for _, sym := range parts[1:] {
+		symbol := strings.ToUpper(sym)
+		b.pairManager.AddUserPair(user.ID.String(), exchangeName, symbol)
+		added = append(added, symbol)
+	}
+
+	return fmt.Sprintf("✅ %d pair berhasil ditambahkan ke list %s Anda:\n*%s*", len(added), exchangeName, strings.Join(added, ", ")), nil, nil
 }
 
 // handleRemovePair handles /removepair command
@@ -715,14 +729,52 @@ func (b *Bot) handleRemovePair(ctx context.Context, user *models.User, args stri
 
 	parts := strings.Fields(args)
 	if len(parts) < 2 {
-		return "⚠️ Format salah.\nGunakan: `/removepair <exchange> <pair>`\nContoh: `/removepair Binance ADAUSDT`", nil, nil
+		return "⚠️ Format salah.\nGunakan: `/removepair <exchange> <pair1> <pair2>...`\nContoh: `/removepair Binance ADAUSDT BTCUSDT`", nil, nil
 	}
 
-	exchangeName := parts[0]
-	symbol := strings.ToUpper(parts[1])
+	exchangeName := strings.ToUpper(parts[0])
+	if exchangeName == "BINANCE" {
+		exchangeName = "Binance"
+	} else if exchangeName == "OKX" {
+		exchangeName = "OKX"
+	} else {
+		return "⚠️ Exchange tidak valid. Saat ini hanya mendukung: `Binance`, `OKX`.", nil, nil
+	}
 
-	b.pairManager.RemoveUserPair(user.ID.String(), exchangeName, symbol)
-	return fmt.Sprintf("🗑️ Pair *%s* pada exchange *%s* berhasil dihapus dari list Anda.", symbol, exchangeName), nil, nil
+	var removed []string
+	for _, sym := range parts[1:] {
+		symbol := strings.ToUpper(sym)
+		b.pairManager.RemoveUserPair(user.ID.String(), exchangeName, symbol)
+		removed = append(removed, symbol)
+	}
+
+	return fmt.Sprintf("🗑️ %d pair berhasil dihapus dari list %s Anda:\n*%s*", len(removed), exchangeName, strings.Join(removed, ", ")), nil, nil
+}
+
+// handleMyPairs handles /mypairs command
+// Deskripsi: Menampilkan list pair yang dipantau oleh user
+func (b *Bot) handleMyPairs(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	if b.pairManager == nil {
+		return "⚠️ Sistem PairManager belum tersedia.", nil, nil
+	}
+
+	pairs := b.pairManager.GetUserPairs(user.ID.String())
+	if len(pairs) == 0 {
+		return "📭 Anda belum memantau pair apapun.\nSilakan gunakan perintah `/addpair <exchange> <pair>`", nil, nil
+	}
+
+	var msgBuilder strings.Builder
+	msgBuilder.WriteString("📊 *Daftar Pair Pantauan Anda:*\n\n")
+
+	for exchange, symbols := range pairs {
+		if len(symbols) > 0 {
+			msgBuilder.WriteString(fmt.Sprintf("*[%s]*\n", exchange))
+			msgBuilder.WriteString(strings.Join(symbols, ", "))
+			msgBuilder.WriteString("\n\n")
+		}
+	}
+
+	return msgBuilder.String(), nil, nil
 }
 
 // handleDashboard handles /dashboard command
@@ -1667,7 +1719,7 @@ Gunakan /settings untuk mengubah konfigurasi.`, user.TelegramID, username, statu
 		user.WCHBalance.String(), totalTrades, totalBTCAccumulated,
 		maxRisk, dailyLoss, maxPositions, autoTrade,
 		notifyTrade, notifyError,
-		"Contact admin to manage jika ada kendala @nafaswch"), nil, nil
+		"Contact admin to manage your API key have a problem @nafaswch"), nil, nil
 }
 
 // handleCallbackQuery memproses callback query dari inline button.
