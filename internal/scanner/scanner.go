@@ -8,6 +8,7 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 //   - intervals: []string — list timeframe (1m, 5m, 1h, 4h, 1d)
 //   - logger: *logger.Logger — logger instance
 type Scanner struct {
+	mu        sync.RWMutex
 	exchange  exchange.Exchange
 	symbols   []string
 	intervals []string
@@ -142,13 +144,21 @@ func (s *Scanner) ScanAllPairs(ctx context.Context, callback func(MarketData)) e
 	const maxConcurrent = 10
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
-	errCh := make(chan error, len(s.symbols)*len(s.intervals))
 
-	for _, symbol := range s.symbols {
-		for _, interval := range s.intervals {
+	s.mu.RLock()
+	symbols := make([]string, len(s.symbols))
+	copy(symbols, s.symbols)
+	intervals := s.intervals
+	s.mu.RUnlock()
+
+	errCh := make(chan error, len(symbols)*len(intervals))
+
+	for _, symbol := range symbols {
+		for _, interval := range intervals {
 			wg.Add(1)
 			go func(sym, intv string) {
 				defer wg.Done()
+
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
@@ -185,10 +195,58 @@ func (s *Scanner) ScanAllPairs(ctx context.Context, callback func(MarketData)) e
 	for err := range errCh {
 		errors = append(errors, err)
 	}
-	if len(errors) > 0 && len(errors) == len(s.symbols)*len(s.intervals) {
+	if len(errors) > 0 && len(errors) == len(symbols)*len(intervals) {
 		return fmt.Errorf("all scan operations failed: %v", errors)
 	}
 	return nil
+}
+
+// AddSymbol adds a new symbol to the scanner
+// Nama Function: AddSymbol
+// Deskripsi: Menambahkan symbol baru ke dalam list scan jika belum ada.
+// Parameter/Value Input:
+//   - symbol: string — symbol trading baru (contoh: "BNBUSDT")
+func (s *Scanner) AddSymbol(symbol string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if slices.Contains(s.symbols, symbol) {
+		return
+	}
+	s.symbols = append(s.symbols, symbol)
+	s.logger.Infof("Added new symbol to scanner: %s", symbol)
+}
+
+// AddSymbols adds multiple symbols to the scanner
+// Nama Function: AddSymbols
+func (s *Scanner) AddSymbols(symbols []string) {
+	for _, sym := range symbols {
+		s.AddSymbol(sym)
+	}
+}
+
+// RemoveSymbol removes a symbol from the scanner
+// Nama Function: RemoveSymbol
+// Deskripsi: Menghapus symbol dari list scan.
+func (s *Scanner) RemoveSymbol(symbol string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, sym := range s.symbols {
+		if sym == symbol {
+			s.symbols = append(s.symbols[:i], s.symbols[i+1:]...)
+			s.logger.Infof("Removed symbol from scanner: %s", symbol)
+			return
+		}
+	}
+}
+
+// GetSymbols returns a copy of the current symbols list
+// Nama Function: GetSymbols
+func (s *Scanner) GetSymbols() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	symbols := make([]string, len(s.symbols))
+	copy(symbols, s.symbols)
+	return symbols
 }
 
 // CalculateRSI calculates Relative Strength Index

@@ -332,6 +332,27 @@ if telegramBot != nil {
 
 ---
 
+## PAIR MANAGER (DYNAMIC SCANNING)
+
+Sistem NAFAS mendukung penambahan dan penghapusan pair secara dinamis per-user dan per-exchange menggunakan komponen `PairManager` yang terhubung ke `Scanner`.
+
+### Arsitektur
+`PairManager` bertugas menyimpan relasi:
+- `userPairs`: Daftar pair yang di-track oleh `userID` pada `exchange` tertentu.
+- `masterPairs`: Reference count (jumlah user) yang memantau sebuah pair pada suatu `exchange`.
+- `scanners`: Map instance `*Scanner` untuk setiap exchange (e.g. "Binance", "OKX").
+
+### Alur Kerja
+1. User memanggil command `/addpair <exchange> <symbol>` di Telegram.
+2. `PairManager` menambahkan pair tersebut ke `userPairs` milik user.
+3. `PairManager` menaikkan reference count di `masterPairs`.
+4. Jika reference count berubah dari `0` ke `1`, `PairManager` meneruskannya ke `scanner.AddSymbol(symbol)` untuk mulai menarik data market (OHLCV/Ticker).
+5. Jika user memanggil `/removepair <exchange> <symbol>`, reference count turun. Jika mencapai `0`, pair dihapus dari master scanner.
+
+**Fitur utama:** Thread-safe (menggunakan `sync.RWMutex`), isolasi per-exchange, dan mencegah duplicate scanner jobs.
+
+---
+
 ## COMMANDS
 
 ```bash

@@ -23,6 +23,7 @@ import (
 	"github.com/nzf210/nafas-bot/internal/exchange"
 	"github.com/nzf210/nafas-bot/internal/logger"
 	"github.com/nzf210/nafas-bot/internal/models"
+	"github.com/nzf210/nafas-bot/internal/scanner"
 	"github.com/shopspring/decimal"
 )
 
@@ -62,6 +63,7 @@ type Bot struct {
 	exchange    exchange.Exchange
 	httpClient  *http.Client
 	logger      *logger.Logger
+	pairManager *scanner.PairManager
 	handlers    map[string]CommandHandler
 	jobQueue    chan Update
 	stopCh      chan struct{}
@@ -106,6 +108,7 @@ type BotConfig struct {
 	AuthService *auth.Service
 	DB          *sql.DB
 	Exchange    exchange.Exchange
+	PairManager *scanner.PairManager
 }
 
 // NewBotWithConfig creates a new Telegram bot with full dependencies
@@ -131,6 +134,7 @@ func NewBotWithConfig(config BotConfig) *Bot {
 		exchange:    config.Exchange,
 		httpClient:  &http.Client{Timeout: 30 * time.Second},
 		logger:      logger.Default().WithField("module", "telegram"),
+		pairManager: config.PairManager,
 		handlers:    make(map[string]CommandHandler),
 		jobQueue:    make(chan Update, QueueSize),
 		stopCh:      make(chan struct{}),
@@ -255,6 +259,8 @@ func (b *Bot) RegisterDefaultHandlers() {
 	b.Register("start", b.handleStart)
 	b.Register("help", b.handleHelp)
 	b.Register("guide", b.handleGuide)
+	b.Register("addpair", b.handleAddPair)
+	b.Register("removepair", b.handleRemovePair)
 	b.Register("dashboard", b.handleDashboard)
 	b.Register("portfolio", b.handlePortfolio)
 	b.Register("settings", b.handleSettings)
@@ -664,12 +670,54 @@ func (b *Bot) handleHelp(ctx context.Context, user *models.User, args string) (s
 *🔐 API KEY*
 /setapikey - Setup API key exchange (self-service)
 
+*⚙️ SETTINGS*
+/addpair - Menambah pair baru untuk discan (contoh: /addpair Binance ADAUSDT)
+/removepair - Menghapus pair (contoh: /removepair Binance ADAUSDT)
+
 *💡 Quick Tips:*
 • Ketik /guide untuk panduan lengkap
 • Hubungi admin untuk setup awal
 • Aktifkan auto-trade di /settings
 
 Butuh bantuan? Hubungi admin.`, nil, nil
+}
+
+// handleAddPair handles /addpair command
+// Deskripsi: Menambahkan pair baru.
+func (b *Bot) handleAddPair(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	if b.pairManager == nil {
+		return "⚠️ Sistem PairManager belum tersedia.", nil, nil
+	}
+
+	parts := strings.Fields(args)
+	if len(parts) < 2 {
+		return "⚠️ Format salah.\nGunakan: `/addpair <exchange> <pair>`\nContoh: `/addpair Binance ADAUSDT`", nil, nil
+	}
+
+	exchangeName := parts[0]
+	symbol := strings.ToUpper(parts[1])
+
+	b.pairManager.AddUserPair(user.ID.String(), exchangeName, symbol)
+	return fmt.Sprintf("✅ Pair *%s* pada exchange *%s* berhasil ditambahkan ke list Anda.", symbol, exchangeName), nil, nil
+}
+
+// handleRemovePair handles /removepair command
+// Deskripsi: Menghapus pair.
+func (b *Bot) handleRemovePair(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	if b.pairManager == nil {
+		return "⚠️ Sistem PairManager belum tersedia.", nil, nil
+	}
+
+	parts := strings.Fields(args)
+	if len(parts) < 2 {
+		return "⚠️ Format salah.\nGunakan: `/removepair <exchange> <pair>`\nContoh: `/removepair Binance ADAUSDT`", nil, nil
+	}
+
+	exchangeName := parts[0]
+	symbol := strings.ToUpper(parts[1])
+
+	b.pairManager.RemoveUserPair(user.ID.String(), exchangeName, symbol)
+	return fmt.Sprintf("🗑️ Pair *%s* pada exchange *%s* berhasil dihapus dari list Anda.", symbol, exchangeName), nil, nil
 }
 
 // handleDashboard handles /dashboard command

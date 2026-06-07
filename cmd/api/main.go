@@ -88,13 +88,30 @@ func main() {
 	binanceClient := exchange.NewBinance()
 	logg.Infof("Exchange client initialized: %s", binanceClient.GetName())
 
-	// Initialize scanner
+	// Initialize scanner with empty pairs initially
 	marketScanner := scanner.NewScanner(
 		binanceClient,
-		[]string{"BTCUSDT", "ETHUSDT", "SOLUSDT"},
+		[]string{}, // Start empty, will be populated by PairManager
 		[]string{"1h", "4h", "1d"},
 	)
-	logg.Info("Market scanner initialized")
+	
+	// Initialize PairManager
+	pairManager := scanner.NewPairManager(db)
+	
+	// Load existing pairs from database
+	if err := pairManager.LoadFromDB(); err != nil {
+		logg.Errorf("Failed to load pairs from DB: %v", err)
+	}
+	
+	pairManager.RegisterScanner(binanceClient.GetName(), marketScanner)
+	
+	// Add default system pairs
+	defaultPairs := []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+	for _, pair := range defaultPairs {
+		pairManager.AddUserPair("system", binanceClient.GetName(), pair)
+	}
+	
+	logg.Info("Market scanner and PairManager initialized")
 
 	// Initialize AI Coordinator (TradingAgents)
 	taClient := ai.NewTradingAgentsClient(
@@ -127,6 +144,7 @@ func main() {
 			AuthService: authService,
 			DB:          db,
 			Exchange:    binanceClient,
+			PairManager: pairManager,
 		})
 		telegramBot.RegisterDefaultHandlers()
 		

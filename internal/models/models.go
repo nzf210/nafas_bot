@@ -146,6 +146,7 @@ type UserConfig struct {
 type TradingPair struct {
 	ID         UUID      `json:"id" db:"id"`
 	UserID     UUID      `json:"user_id" db:"user_id"`
+	Exchange   string    `json:"exchange" db:"exchange"`
 	Symbol     string    `json:"symbol" db:"symbol"`
 	BaseAsset  string    `json:"base_asset" db:"base_asset"`
 	QuoteAsset string    `json:"quote_asset" db:"quote_asset"`
