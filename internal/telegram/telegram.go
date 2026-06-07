@@ -685,6 +685,10 @@ func (b *Bot) handleHelp(ctx context.Context, user *models.User, args string) (s
 /addpair - Menambah satu/lebih pair (contoh: /addpair Binance ADAUSDT BTCUSDT)
 /removepair - Menghapus satu/lebih pair (contoh: /removepair Binance ADAUSDT)
 /setreport - Mengatur interval laporan (contoh: /setreport 5m, 1h, 24h)
+/setrisk - Ubah risk per trade
+/setallocation - Ubah maksimal alokasi modal per trade
+/setdailyloss - Ubah batas rugi harian
+/setmaxpos - Ubah maksimal posisi aktif
 
 *💡 Quick Tips:*
 • Ketik /guide untuk panduan lengkap

@@ -467,13 +467,34 @@ Cross-chain trading, DEX integration, AI portfolio rotation engine, agent market
 
 Berikut adalah pengaturan parameter spesifik pada file `.env` yang digunakan untuk mengontrol perilaku bot:
 
-### Limitasi Pengguna
-- `MAX_PAIRS_PER_USER` (default: 10): Mengatur jumlah maksimal pair yang bisa dipantau oleh setiap pengguna. Berlaku saat pengguna mengeksekusi `/addpair`. Pair yang dimasukkan dobel atau sudah ada secara otomatis akan diabaikan (di-skip).
+### Limitasi Sistem & Pengguna
+- `MAX_PAIRS_PER_USER` (default: 10): Mengatur jumlah maksimal pair yang bisa dipantau oleh setiap pengguna.
+  - **Jika dikecilkan**: Server lebih ringan, scanning lebih cepat, namun user tidak bebas memantau banyak koin.
+  - **Jika dibesarkan**: User bisa memantau puluhan koin sekaligus, namun beban `scanner` dan request ke Exchange API akan melonjak drastis, berisiko *rate limit*.
+
+### Default Trading Parameters (Risk Guardian)
+- `DEFAULT_MAX_RISK_PER_TRADE` (default: 1.0): Persentase maksimal dari modal yang direlakan hilang jika harga menyentuh Stop-Loss.
+  - **Jika dikecilkan (misal 0.5)**: Posisi yang dibuka sangat konservatif (lot kecil). Kerugian sangat terminimalisir tapi profit harian akan terasa lambat.
+  - **Jika dibesarkan (misal 3.0)**: Posisi yang dibuka sangat agresif (lot besar). Potensi profit tinggi namun *drawdown* modal bisa sangat tajam jika salah arah.
+- `DEFAULT_MAX_ALLOCATION_PER_TRADE` (default: 50.0): Batas persentase modal keseluruhan (BTC balance) yang boleh digunakan dalam satu transaksi (Hard Cap), mengabaikan kalkulasi dinamis.
+  - **Jika dikecilkan (misal 10.0)**: Sekalipun *Risk Guardian* membolehkan beli banyak, bot hanya akan menggunakan maksimal 10% saldo per koin. Portofolio akan terdiversifikasi luas (banyak koin).
+  - **Jika dibesarkan (misal 100.0)**: Bot diizinkan melakukan *All-in* 100% modal pada satu koin jika AI sangat yakin dan SL sangat ketat.
+- `DEFAULT_DAILY_LOSS_LIMIT` (default: 5.0): Batas rugi harian dalam persentase. Jika tercapai, bot berhenti trading (Cut-off) sampai hari berikutnya.
+  - **Jika dikecilkan**: Mengamankan modal dari cuaca buruk *(bear market/flash crash)* lebih awal, namun mungkin kehilangan kesempatan saat *bounce*.
+  - **Jika dibesarkan**: Memberi ruang bot bernafas saat volatilitas tinggi, namun modal lebih terancam tergerus sebelum bot menyerah.
 
 ### Threshold Perdagangan AI
-- `MIN_CONFIDENCE_THRESHOLD` (default: 85): Menentukan batas minimum tingkat keyakinan (confidence score, skala 0-100) dari AI TradingAgents. Jika hasil kalkulasi di bawah ini, sinyal tidak akan diteruskan ke eksekusi trade.
-- `MAX_RISK_LEVEL` (default: low): Menentukan tingkat risiko maksimal yang dapat diizinkan (`low`, `medium`, `high`, `extreme`) oleh *Risk Guardian*. Jika sebuah trade melampaui level ini, order tersebut akan diblokir.
+- `MIN_CONFIDENCE_THRESHOLD` (default: 85): Batas minimum skor keyakinan AI (0-100) agar sinyal diteruskan ke *Risk Guardian*.
+  - **Jika dikecilkan (misal 60)**: Bot akan jauh lebih cerewet dan agresif. Banyak sinyal (termasuk yang kurang valid/spekulatif) akan dieksekusi.
+  - **Jika dibesarkan (misal 95)**: Bot menjadi sangat pemilih. *Trading frequency* (frekuensi trading) akan sangat menurun, hanya masuk ketika *setup* sempurna (Sniper mode).
+- `MAX_RISK_LEVEL` (default: low): Tingkat risiko maksimal yang diizinkan untuk dieksekusi (pilihan: `low`, `medium`, `high`, `extreme`).
+  - **Jika diubah ke `low`**: Paling aman. Hanya ambil order di koin dengan volatilitas tenang dan struktur *market* jelas.
+  - **Jika diubah ke `extreme`**: Bot akan mengambil peluang di koin yang sedang *pump and dump* liar, risiko *slippage* dan liquidasi sangat tinggi.
 
 ### Filter Pre-AI (Penyaring Sebelum Analisa)
-- `MIN_VOLATILITY_PERCENT` (default: 0.5): Batas minimal fluktuasi harga (volatilitas) yang terjadi pada beberapa candle terakhir (misal 15 menit terakhir). Jika volatilitas di bawah batas ini, koin sedang *sideways* mati dan otomatis di-skip untuk menghemat beban analitik AI.
-- `MIN_VOLUME_24H` (default: 100000): Syarat volume perdagangan 24 jam minimal agar koin layak dianalisa oleh AI. Koin yang sepi transaksi tidak akan diproses.
+- `MIN_VOLATILITY_PERCENT` (default: 0.5): Batas minimal fluktuasi harga beberapa *candle* terakhir agar koin tidak dianggap "mati".
+  - **Jika dikecilkan (misal 0.1)**: AI akan buang waktu menganalisa koin *sideways* yang membosankan.
+  - **Jika dibesarkan (misal 2.0)**: Koin harus bergerak tajam minimal 2% barulah dianalisa AI. Hanya koin yang sedang tren kuat yang ditangkap.
+- `MIN_VOLUME_24H` (default: 100000): Volume 24 jam minimal agar koin diproses.
+  - **Jika dikecilkan (misal 10000)**: Koin "*shitcoin*" sepi transaksi akan ikut dianalisa, berisiko nyangkut saat beli/jual karena tidak ada likuiditas.
+  - **Jika dibesarkan (misal 5000000)**: Hanya koin-koin berkapitalisasi raksasa (Top 20 CMC) yang akan di-scan. Beban sistem jauh lebih ringan.
