@@ -1729,7 +1729,7 @@ func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string)
 	notifyError := "❌ Off"
 	maxRisk := "1.0%"
 	maxAlloc := "50.0%"
-	dailyLoss := "$5.00"
+	dailyLoss := "5.00"
 	maxPositions := "3"
 
 	if b.db != nil {
@@ -1760,6 +1760,7 @@ func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string)
 
 	// Get account statistics
 	var totalTrades, totalBTCAccumulated string
+	var apiKeyCount int
 	if b.db != nil {
 		b.db.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM orders WHERE user_id = $1
@@ -1768,12 +1769,29 @@ func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string)
 		b.db.QueryRowContext(ctx, `
 			SELECT COALESCE(SUM(btc_received), 0) FROM btc_accumulation_ledger WHERE user_id = $1
 		`, user.ID).Scan(&totalBTCAccumulated)
+
+		b.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM api_keys WHERE user_id = $1 AND is_active = true
+		`, user.ID).Scan(&apiKeyCount)
 	}
 	if totalTrades == "" {
 		totalTrades = "0"
 	}
 	if totalBTCAccumulated == "" {
-		totalBTCAccumulated = "0"
+		totalBTCAccumulated = "0.00"
+	}
+
+	apiKeyStatus := "❌ Belum Diset (Gunakan /setapikey)"
+	if apiKeyCount > 0 {
+		apiKeyStatus = "✅ Terhubung"
+	}
+
+	activePairs := 0
+	if b.pairManager != nil {
+		userPairsMap := b.pairManager.GetUserPairs(user.ID.String())
+		for _, pairs := range userPairsMap {
+			activePairs += len(pairs)
+		}
 	}
 
 	// Get member since
@@ -1798,8 +1816,9 @@ func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string)
 *📊 Trading Stats:*
 • Total Trades: %s
 • BTC Accumulated: %s BTC
+• Active Pairs: %d/%d (Batas Maksimal)
 
-*⚙️ *Current Settings*
+*⚙️ Current Settings:*
 • Max Risk/Trade: %s
 • Max Alloc/Trade: %s
 • Daily Loss Limit: %s%%
@@ -1811,13 +1830,13 @@ func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string)
 • Error Alerts: %s
 
 *🔐 API Key:*
-• %s
+• Status: %s
+_(Jika ada masalah API Key, silakan hubungi admin @nafaswch)_
 
-Gunakan /settings untuk mengubah konfigurasi.`, user.TelegramID, username, statusIcon, statusText, memberSince,
-		user.WCHBalance.String(), totalTrades, totalBTCAccumulated,
+💡 _Gunakan /settings untuk mengubah konfigurasi._`, user.TelegramID, username, statusIcon, statusText, memberSince,
+		user.WCHBalance.String(), totalTrades, totalBTCAccumulated, activePairs, b.maxPairsPerUser,
 		maxRisk, maxAlloc, dailyLoss, maxPositions, autoTrade,
-		notifyTrade, notifyError,
-		"Contact admin to manage your API key have a problem @nafaswch"), nil, nil
+		notifyTrade, notifyError, apiKeyStatus), nil, nil
 }
 
 // handleCallbackQuery memproses callback query dari inline button.
