@@ -89,6 +89,7 @@ func main() {
 		{"ALTER TABLE trading_pairs ADD CONSTRAINT unique_user_exchange_symbol UNIQUE (user_id, exchange, symbol);", "add unique constraint (ignore if already exists)", false},
 		{"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS report_interval VARCHAR(20) DEFAULT '24h';", "add report_interval column to user_configs", false},
 		{"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS last_report_sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;", "add last_report_sent_at column to user_configs", false},
+		{"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS max_allocation_per_trade DECIMAL(18,8) DEFAULT 10.00;", "add max_allocation_per_trade column to user_configs", false},
 	}
 	for _, m := range autoMigrateQueries {
 		if _, err := db.Exec(m.sql); err != nil {
