@@ -120,10 +120,11 @@ type SystemSetting struct {
 //   - UserConfig: struct konfigurasi user
 type UserConfig struct {
 	ID               UUID    `json:"id" db:"id"`
-	UserID           UUID    `json:"user_id" db:"user_id"`
-	MaxRiskPerTrade   decimal.Decimal `json:"max_risk_per_trade" db:"max_risk_per_trade"`
-	DailyLossLimit    decimal.Decimal `json:"daily_loss_limit" db:"daily_loss_limit"`
-	MaxOpenPositions  int     `json:"max_open_positions" db:"max_open_positions"`
+	UserID                UUID    `json:"user_id" db:"user_id"`
+	MaxRiskPerTrade       decimal.Decimal `json:"max_risk_per_trade" db:"max_risk_per_trade"`
+	MaxAllocationPerTrade decimal.Decimal `json:"max_allocation_per_trade" db:"max_allocation_per_trade"`
+	DailyLossLimit        decimal.Decimal `json:"daily_loss_limit" db:"daily_loss_limit"`
+	MaxOpenPositions      int     `json:"max_open_positions" db:"max_open_positions"`
 	NotifyOnTrade     bool    `json:"notify_on_trade" db:"notify_on_trade"`
 	NotifyOnError     bool    `json:"notify_on_error" db:"notify_on_error"`
 	DailyReportTime   string  `json:"daily_report_time" db:"daily_report_time"`

@@ -347,6 +347,22 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 	userLogger = userLogger.WithField("exchange", userCtx.Exchange)
 	userLogger.Info("Processing user trading cycle")
 
+	// Get base capital balance (BTC)
+	var portfolioValue decimal.Decimal
+	balances, err := o.exchange.GetBalances(ctx, userCtx.APIKey, userCtx.APISecret)
+	if err == nil {
+		if btcBal, ok := balances["BTC"]; ok {
+			portfolioValue = btcBal
+			userLogger.WithField("btc_balance", portfolioValue).Debug("Fetched BTC balance for portfolio sizing")
+		} else {
+			portfolioValue = decimal.NewFromFloat(0.1) // fallback
+			userLogger.Warn("BTC balance not found, using fallback 0.1 BTC")
+		}
+	} else {
+		userLogger.WithError(err).Warn("Failed to get exchange balances, using fallback 0.1 BTC")
+		portfolioValue = decimal.NewFromFloat(0.1)
+	}
+
 	// Run AI analysis for each configured pair
 	for _, pair := range userCtx.Pairs {
 		data, ok := marketData[pair.Symbol]
@@ -465,22 +481,37 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			stopLossPercent = decimal.NewFromFloat(decision.ExecutionPlan.TakeProfitLevels[0].TargetPercent)
 		}
 
-		positionSize := guardian.CalculatePositionSize(
-			decimal.NewFromFloat(1000), // placeholder portfolio value
+		positionSizeQuote := guardian.CalculatePositionSize(
+			portfolioValue, // BTC balance
 			userCtx.Config.MaxRiskPerTrade,
 			stopLossPercent,
 		)
 
-		if positionSize.LessThan(decimal.Zero) {
+		// Cap by MaxAllocationPerTrade
+		maxAllocation := portfolioValue.Mul(userCtx.Config.MaxAllocationPerTrade).Div(decimal.NewFromFloat(100))
+		if positionSizeQuote.GreaterThan(maxAllocation) {
+			positionSizeQuote = maxAllocation
+			userLogger.WithField("symbol", pair.Symbol).WithField("capped_at", maxAllocation).Debug("Position size capped by MaxAllocationPerTrade")
+		}
+
+		if positionSizeQuote.LessThanOrEqual(decimal.Zero) {
 			userLogger.WithField("symbol", pair.Symbol).Debug("Position size too small, skipping")
 			continue
 		}
+
+		// Convert Quote Asset (BTC) position size to Base Asset quantity
+		if data.LatestPrice.LessThanOrEqual(decimal.Zero) {
+			userLogger.WithField("symbol", pair.Symbol).Warn("Latest price is invalid, skipping")
+			continue
+		}
+		
+		positionSizeBase := positionSizeQuote.Div(data.LatestPrice)
 
 		// Execute trade
 		plan := execution.ExecutionPlan{
 			Symbol:      pair.Symbol,
 			Side:        decision.TradeDecision,
-			Quantity:    positionSize,
+			Quantity:    positionSizeBase,
 			StopLoss:    decision.ExecutionPlan.StopLoss,
 			MaxSlippage: decimal.NewFromFloat(0.005), // 0.5% max slippage
 		}
@@ -493,7 +524,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 		}
 
 		userLogger.WithField("symbol", pair.Symbol).Infof("Trade executed: %s %s @ %s",
-			decision.TradeDecision, positionSize.String(), result.ExecutionPrice.String())
+			decision.TradeDecision, positionSizeBase.String(), result.ExecutionPrice.String())
 	}
 
 	return nil

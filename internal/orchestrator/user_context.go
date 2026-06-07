@@ -145,10 +145,10 @@ func buildUserContext(ctx context.Context, db *sql.DB, user *models.User) (*User
 	// Get user config
 	var config models.UserConfig
 	err = db.QueryRowContext(ctx, `
-		SELECT max_risk_per_trade, daily_loss_limit, max_open_positions,
+		SELECT COALESCE(max_risk_per_trade, 1.0), COALESCE(max_allocation_per_trade, 50.0), COALESCE(daily_loss_limit, 5.0), max_open_positions,
 			   notify_on_trade, notify_on_error, auto_trade_enabled
 		FROM user_configs WHERE user_id = $1
-	`, user.ID).Scan(&config.MaxRiskPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
+	`, user.ID).Scan(&config.MaxRiskPerTrade, &config.MaxAllocationPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
 		&config.NotifyOnTrade, &config.NotifyOnError, &config.AutoTradeEnabled)
 
 	if err != nil && err != sql.ErrNoRows {

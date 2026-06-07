@@ -281,6 +281,7 @@ func (b *Bot) RegisterDefaultHandlers() {
 	b.Register("setapikey", b.handleSetAPIKey)
 	b.Register("api", b.handleSetAPIKey)
 	b.Register("setrisk", b.handleSetRisk)
+	b.Register("setallocation", b.handleSetAllocation)
 	b.Register("setdailyloss", b.handleSetDailyLoss)
 	b.Register("setmaxpos", b.handleSetMaxPositions)
 }
@@ -941,18 +942,20 @@ func (b *Bot) handleSettings(ctx context.Context, user *models.User, args string
 	tradeAlerts := "✅ On"
 	errorAlerts := "✅ On"
 	autoTrade := "❌ Disabled"
+	maxAllocation := "50.0"
 
 	if b.db != nil {
 		var config models.UserConfig
 		err := b.db.QueryRowContext(ctx, `
-			SELECT COALESCE(max_risk_per_trade, 1.0), COALESCE(daily_loss_limit, 5.0), COALESCE(max_open_positions, 3),
+			SELECT COALESCE(max_risk_per_trade, 1.0), COALESCE(max_allocation_per_trade, 50.0), COALESCE(daily_loss_limit, 5.0), COALESCE(max_open_positions, 3),
 				   COALESCE(notify_on_trade, true), COALESCE(notify_on_error, true), COALESCE(auto_trade_enabled, false)
 			FROM user_configs WHERE user_id = $1
-		`, user.ID).Scan(&config.MaxRiskPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
+		`, user.ID).Scan(&config.MaxRiskPerTrade, &config.MaxAllocationPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
 			&config.NotifyOnTrade, &config.NotifyOnError, &config.AutoTradeEnabled)
 
 		if err == nil {
 			maxRisk = config.MaxRiskPerTrade.String()
+			maxAllocation = config.MaxAllocationPerTrade.String()
 			dailyLoss = config.DailyLossLimit.String()
 			maxPositions = config.MaxOpenPositions
 			if !config.NotifyOnTrade {
@@ -978,6 +981,7 @@ func (b *Bot) handleSettings(ctx context.Context, user *models.User, args string
 				{"text": fmt.Sprintf("📉 Daily Loss: %s%%", dailyLoss), "callback_data": "settings_dailyloss"},
 			},
 			{
+				{"text": fmt.Sprintf("💼 Max Alloc: %s%%", maxAllocation), "callback_data": "settings_alloc"},
 				{"text": fmt.Sprintf("📈 Max Pos: %d", maxPositions), "callback_data": "settings_maxpos"},
 			},
 			{
@@ -992,11 +996,10 @@ func (b *Bot) handleSettings(ctx context.Context, user *models.User, args string
 		},
 	}
 
-	return fmt.Sprintf(`*⚙️ Settings*
-
-_Klik tombol di bawah untuk mengubah pengaturan._
+	return fmt.Sprintf(`⚙️ *Pengaturan NAFAS Bot*
 
 📊 Max Risk/Trade: %s%%
+💼 Max Alloc/Trade: %s%%
 📉 Daily Loss Limit: %s%%
 📈 Max Open Positions: %d
 
@@ -1006,7 +1009,7 @@ _Klik tombol di bawah untuk mengubah pengaturan._
 ⏰ Daily Report: ⏰ 00:00
 
 *Auto Trading:* %s`,
-		maxRisk, dailyLoss, maxPositions,
+		maxRisk, maxAllocation, dailyLoss, maxPositions,
 		tradeAlerts, errorAlerts, autoTrade), replyMarkup, nil
 }
 
@@ -1684,20 +1687,22 @@ func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string)
 	notifyTrade := "❌ Off"
 	notifyError := "❌ Off"
 	maxRisk := "1.0%"
+	maxAlloc := "50.0%"
 	dailyLoss := "$5.00"
 	maxPositions := "3"
 
 	if b.db != nil {
 		var config models.UserConfig
 		err := b.db.QueryRowContext(ctx, `
-			SELECT max_risk_per_trade, daily_loss_limit, max_open_positions,
+			SELECT max_risk_per_trade, max_allocation_per_trade, daily_loss_limit, max_open_positions,
 				   notify_on_trade, notify_on_error, auto_trade_enabled
 			FROM user_configs WHERE user_id = $1
-		`, user.ID).Scan(&config.MaxRiskPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
+		`, user.ID).Scan(&config.MaxRiskPerTrade, &config.MaxAllocationPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
 			&config.NotifyOnTrade, &config.NotifyOnError, &config.AutoTradeEnabled)
 
 		if err == nil {
 			maxRisk = config.MaxRiskPerTrade.String() + "%"
+			maxAlloc = config.MaxAllocationPerTrade.String() + "%"
 			dailyLoss = config.DailyLossLimit.String()
 			maxPositions = fmt.Sprintf("%d", config.MaxOpenPositions)
 			if config.AutoTradeEnabled {
@@ -1753,9 +1758,10 @@ func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string)
 • Total Trades: %s
 • BTC Accumulated: %s BTC
 
-*⚙️ Configuration:*
+*⚙️ *Current Settings*
 • Max Risk/Trade: %s
-• Daily Loss Limit: %s
+• Max Alloc/Trade: %s
+• Daily Loss Limit: %s%%
 • Max Positions: %s
 • Auto Trade: %s
 
@@ -1768,7 +1774,7 @@ func (b *Bot) handleProfile(ctx context.Context, user *models.User, args string)
 
 Gunakan /settings untuk mengubah konfigurasi.`, user.TelegramID, username, statusIcon, statusText, memberSince,
 		user.WCHBalance.String(), totalTrades, totalBTCAccumulated,
-		maxRisk, dailyLoss, maxPositions, autoTrade,
+		maxRisk, maxAlloc, dailyLoss, maxPositions, autoTrade,
 		notifyTrade, notifyError,
 		"Contact admin to manage your API key have a problem @nafaswch"), nil, nil
 }
@@ -1832,6 +1838,17 @@ Masukkan jumlah maksimal posisi terbuka (1-10):
 Ketik /setmaxpos <nilai> untuk mengubah.
 
 Contoh: /setmaxpos 5`, nil)
+
+	case data == "settings_alloc":
+		b.SendMessage(int64(cbq.From.ID), `💼 *Ubah Max Allocation/Trade*
+
+Masukkan batas porsi modal maksimal per trade dalam persen (5.0 - 100.0):
+
+Contoh: 25 untuk 25%
+
+Ketik /setallocation <nilai> untuk mengubah.
+
+Contoh: /setallocation 25`, nil)
 
 	case data == "settings_tradealerts":
 		if b.db != nil {
@@ -2035,6 +2052,45 @@ func (b *Bot) handleSetRisk(ctx context.Context, user *models.User, args string)
 	}
 
 	return fmt.Sprintf("📊 *Risk Updated*\n\nMax Risk/Trade: %s%%\n\n✅ Pengaturan berhasil disimpan.", risk.String()), nil, nil
+}
+
+// handleSetAllocation handles /setallocation command untuk ubah max allocation per trade.
+// Nama Function: handleSetAllocation
+// Deskripsi: Mengatur porsi maksimal (dalam persen) dari modal untuk sebuah trade.
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk operasi database
+//   - user: *models.User — user yang mengirim command
+//   - args: string — persentase alokasi, e.g. "50"
+// Function yang Dipanggil/Dikonsumsi:
+//   - db.ExecContext: dipanggil untuk upsert ke user_configs
+// Output/Return Value:
+//   - string: success/error message
+//   - interface{}: inline keyboard (nil)
+//   - error: error jika proses gagal
+func (b *Bot) handleSetAllocation(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	if args == "" {
+		return "📊 *Set Allocation — Error*\n\nUsage: /setallocation <nilai>\n\nContoh: /setallocation 50\n\nNilai harus antara 5.0 - 100.0%", nil, nil
+	}
+
+	alloc, err := decimalFromString(args)
+	if err != nil || alloc.LessThan(decimal.NewFromFloat(5.0)) || alloc.GreaterThan(decimal.NewFromFloat(100.0)) {
+		return "📊 *Set Allocation — Error*\n\nNilai tidak valid. Masukkan angka antara 5.0 - 100.0\n\nContoh: /setallocation 50", nil, nil
+	}
+
+	if b.db != nil {
+		_, err = b.db.ExecContext(ctx, `
+			INSERT INTO user_configs (user_id, max_allocation_per_trade)
+			VALUES ($1, $2)
+			ON CONFLICT (user_id) DO UPDATE SET
+				max_allocation_per_trade = EXCLUDED.max_allocation_per_trade,
+				updated_at = CURRENT_TIMESTAMP
+		`, user.ID, alloc)
+		if err != nil {
+			return "📊 *Set Allocation — Error*\n\nGagal menyimpan pengaturan.", nil, err
+		}
+	}
+
+	return fmt.Sprintf("📊 *Allocation Updated*\n\nMax Allocation/Trade: %s%%\n\n✅ Pengaturan berhasil disimpan.", alloc.String()), nil, nil
 }
 
 // handleSetDailyLoss handles /setdailyloss command untuk ubah daily loss limit.

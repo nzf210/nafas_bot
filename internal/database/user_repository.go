@@ -118,11 +118,11 @@ func (r *UserRepository) Update(ctx context.Context, user *models.User) error {
 func (r *UserRepository) GetConfig(ctx context.Context, userID models.UUID) (*models.UserConfig, error) {
 	var c models.UserConfig
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, user_id, max_risk_per_trade, daily_loss_limit, max_open_positions,
+		SELECT id, user_id, max_risk_per_trade, max_allocation_per_trade, daily_loss_limit, max_open_positions,
 			   notify_on_trade, notify_on_error, daily_report_time, auto_trade_enabled, created_at, updated_at
 		FROM user_configs
 		WHERE user_id = $1
-	`, userID).Scan(&c.ID, &c.UserID, &c.MaxRiskPerTrade, &c.DailyLossLimit, &c.MaxOpenPositions,
+	`, userID).Scan(&c.ID, &c.UserID, &c.MaxRiskPerTrade, &c.MaxAllocationPerTrade, &c.DailyLossLimit, &c.MaxOpenPositions,
 		&c.NotifyOnTrade, &c.NotifyOnError, &c.DailyReportTime, &c.AutoTradeEnabled, &c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -146,11 +146,12 @@ func (r *UserRepository) SaveConfig(ctx context.Context, config *models.UserConf
 	config.UpdatedAt = time.Now()
 
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO user_configs (id, user_id, max_risk_per_trade, daily_loss_limit, max_open_positions,
+		INSERT INTO user_configs (id, user_id, max_risk_per_trade, max_allocation_per_trade, daily_loss_limit, max_open_positions,
 								  notify_on_trade, notify_on_error, daily_report_time, auto_trade_enabled, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (user_id) DO UPDATE SET
 			max_risk_per_trade = EXCLUDED.max_risk_per_trade,
+			max_allocation_per_trade = EXCLUDED.max_allocation_per_trade,
 			daily_loss_limit = EXCLUDED.daily_loss_limit,
 			max_open_positions = EXCLUDED.max_open_positions,
 			notify_on_trade = EXCLUDED.notify_on_trade,
@@ -158,7 +159,7 @@ func (r *UserRepository) SaveConfig(ctx context.Context, config *models.UserConf
 			daily_report_time = EXCLUDED.daily_report_time,
 			auto_trade_enabled = EXCLUDED.auto_trade_enabled,
 			updated_at = EXCLUDED.updated_at
-	`, config.ID, config.UserID, config.MaxRiskPerTrade, config.DailyLossLimit, config.MaxOpenPositions,
+	`, config.ID, config.UserID, config.MaxRiskPerTrade, config.MaxAllocationPerTrade, config.DailyLossLimit, config.MaxOpenPositions,
 		config.NotifyOnTrade, config.NotifyOnError, config.DailyReportTime, config.AutoTradeEnabled, config.CreatedAt, config.UpdatedAt)
 
 	return err
