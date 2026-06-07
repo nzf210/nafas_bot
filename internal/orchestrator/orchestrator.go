@@ -428,6 +428,8 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			continue
 		}
 
+		userLogger.WithField("symbol", pair.Symbol).Info("Scanning pair for AI analysis")
+
 		// Prepare market data for AI
 		marketDataMap := map[string]any{
 			"symbol":       data.Symbol,
@@ -442,7 +444,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 		// 1. Check 24h Volume
 		volumeFloat, _ := data.Volume24h.Float64()
 		if volumeFloat < o.config.MinVolume24h {
-			userLogger.WithField("symbol", pair.Symbol).WithField("volume", volumeFloat).Debug("Skipping - 24h volume too low")
+			userLogger.WithField("symbol", pair.Symbol).WithField("volume", volumeFloat).WithField("min_volume", o.config.MinVolume24h).Info("Pair rejected: 24h volume too low")
 			continue
 		}
 
@@ -468,35 +470,41 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			if minLowFloat > 0 {
 				volatility := ((maxHighFloat - minLowFloat) / minLowFloat) * 100
 				if volatility < o.config.MinVolatilityPercent {
-					userLogger.WithField("symbol", pair.Symbol).WithField("volatility", volatility).Debug("Skipping - volatility too low for AI analysis")
+					userLogger.WithField("symbol", pair.Symbol).WithField("volatility", volatility).WithField("min_volatility", o.config.MinVolatilityPercent).Info("Pair rejected: volatility too low for AI analysis")
 					continue
 				}
 			}
 		}
 		// ---------------------------------------------------------
 
+		userLogger.WithField("symbol", pair.Symbol).Info("Pair passed scanner filtering, sending to AI for analysis")
+
 		// Run AI analysis using existing Decide method
 		decision, err := o.ai.Decide(ctx, pair.Symbol, marketDataMap, "")
 		if err != nil {
-			userLogger.WithError(err).WithField("symbol", pair.Symbol).Warn("AI analysis failed")
+			userLogger.WithError(err).WithField("symbol", pair.Symbol).Error("AI analysis failed")
 			continue
 		}
 
 		// Log AI decision
 		o.logAIDecision(ctx, &user, pair.Symbol, decision)
 
+		userLogger.WithField("symbol", pair.Symbol).WithField("decision", decision.TradeDecision).WithField("confidence", decision.Confidence.String()).Info("AI analysis completed")
+
 		// Check Confidence Threshold
 		confidenceFloat, _ := decision.Confidence.Float64()
 		if confidenceFloat < o.config.MinConfidenceThreshold {
-			userLogger.WithField("symbol", pair.Symbol).WithField("confidence", confidenceFloat).WithField("threshold", o.config.MinConfidenceThreshold).Info("Trade blocked: confidence too low")
+			userLogger.WithField("symbol", pair.Symbol).WithField("confidence", confidenceFloat).WithField("threshold", o.config.MinConfidenceThreshold).Info("Trade blocked: AI confidence too low")
 			continue
 		}
 
 		// Check if AI recommends trade
-		if decision.TradeDecision != "buy" && decision.TradeDecision != "sell" {
-			userLogger.WithField("symbol", pair.Symbol).WithField("decision", decision.TradeDecision).Debug("Skipping - no trade signal")
+		if decision.TradeDecision != "BUY" && decision.TradeDecision != "SELL" {
+			userLogger.WithField("symbol", pair.Symbol).WithField("decision", decision.TradeDecision).Info("Trade skipped: AI did not recommend buy/sell")
 			continue
 		}
+
+		userLogger.WithField("symbol", pair.Symbol).Info("AI trade recommendation accepted, proceeding to Risk Guardian/Executor")
 
 		// Build order for risk check
 		order := &models.Order{

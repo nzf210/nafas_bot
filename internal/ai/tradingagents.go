@@ -137,7 +137,7 @@ type TradingAgentsClient struct {
 // Output/Return Value:
 //   - *TradingAgentsClient: pointer ke client
 func NewTradingAgentsClient(baseURL, apiKey, model, llmBaseURL string) *TradingAgentsClient {
-	return&TradingAgentsClient{
+	return &TradingAgentsClient{
 		baseURL:    baseURL,
 		apiKey:     apiKey,
 		model:      model,
