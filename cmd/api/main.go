@@ -78,6 +78,20 @@ func main() {
 	defer db.Close()
 	logg.Info("Database connected")
 
+	// Auto-apply recent schema migrations programmatically
+	autoMigrateQueries := []string{
+		"ALTER TABLE trading_pairs ADD COLUMN IF NOT EXISTS exchange VARCHAR(50) DEFAULT 'Binance';",
+		"ALTER TABLE trading_pairs DROP CONSTRAINT IF EXISTS unique_user_exchange_symbol;",
+		"ALTER TABLE trading_pairs ADD CONSTRAINT unique_user_exchange_symbol UNIQUE (user_id, exchange, symbol);",
+		"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS report_interval VARCHAR(20) DEFAULT '24h';",
+		"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS last_report_sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;",
+	}
+	for _, q := range autoMigrateQueries {
+		if _, err := db.Exec(q); err != nil {
+			logg.Warnf("Auto-migration note: %v", err)
+		}
+	}
+
 	// Initialize services
 	authService := auth.NewService(db)
 	_ = risk.NewGuardian()

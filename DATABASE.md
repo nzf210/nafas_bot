@@ -186,6 +186,8 @@ Konfigurasi personal user untuk trading dan notifikasi.
 | `notify_on_trade` | BOOLEAN | DEFAULT true | Notifikasi saat trade executed |
 | `notify_on_error` | BOOLEAN | DEFAULT true | Notifikasi saat error |
 | `daily_report_time` | TIME | DEFAULT '00:00:00' | Waktu kirim laporan harian |
+| `report_interval` | VARCHAR(20) | DEFAULT '24h' | Interval laporan: 1h, 6h, 12h, 24h |
+| `last_report_sent_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Waktu laporan terakhir dikirim |
 | `auto_trade_enabled` | BOOLEAN | DEFAULT false | Auto trading on/off |
 | `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | |
 | `updated_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | |
@@ -196,17 +198,19 @@ Konfigurasi personal user untuk trading dan notifikasi.
 **Catatan:**
 - `max_risk_per_trade` dalam persen (1.00 = 1%)
 - `auto_trade_enabled` harus false default untuk safety
+- `report_interval` dan `last_report_sent_at` ditambahkan di migration 0006
 
 ---
 
 ### `trading_pairs`
 
-Daftar pair trading yang diizinkan per user.
+Daftar pair trading yang diizinkan per user per exchange.
 
 | Kolom | Tipe | Constraint | Deskripsi |
 |-------|------|------------|-----------|
 | `id` | UUID | PK | Identitas unik |
 | `user_id` | UUID | FK → users(id), ON DELETE CASCADE | User owner |
+| `exchange` | VARCHAR(50) | DEFAULT 'Binance' | Nama exchange: Binance, OKX |
 | `symbol` | VARCHAR(20) | NOT NULL | Symbol pair: SOLBTC, ETHBTC |
 | `base_asset` | VARCHAR(20) | NOT NULL | Asset utama: SOL, ETH |
 | `quote_asset` | VARCHAR(20) | NOT NULL | Asset quote: BTC |
@@ -215,18 +219,24 @@ Daftar pair trading yang diizinkan per user.
 | `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | |
 | `updated_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | |
 
+**Constraint:**
+- `UNIQUE(user_id, exchange, symbol)` — satu record per user per exchange per symbol
+
 **Contoh Data:**
 ```
-SOLBTC | SOL | BTC | 1 | true
-ETHBTC | ETH | BTC | 2 | true
-SUIBTC | SUI | BTC | 3 | true
-DOGEBTC | DOGE | BTC | 4 | true
-XRPBTC | XRP | BTC | 5 | true
+uuid | user_uuid | Binance | SOLBTC | SOL | BTC | 1 | true
+uuid | user_uuid | Binance | ETHBTC | ETH | BTC | 2 | true
+uuid | user_uuid | OKX     | SOLBTC | SOL | BTC | 1 | true
+uuid | user_uuid | Binance | SUIBTC | SUI | BTC | 3 | true
 ```
 
 **Indeks:**
 - `idx_trading_pairs_user_id` ON (`user_id`)
 - `idx_trading_pairs_symbol` ON (`symbol`)
+
+**Catatan:**
+- `exchange` kolol ditambahkan di migration 0005
+- User bisa tracking pair yang sama di exchange berbeda (misal: SOLBTC di Binance dan OKX)
 
 ---
 
@@ -784,8 +794,12 @@ Laporan harian performance per user.
 | `000002_ai_memory_schema.down.sql` | Rollback migration 0002 |
 | `000003_user_configs_refine.up.sql` | Refine user_configs: pisah kolom dari JSONB ke individual columns |
 | `000003_user_configs_refine.down.sql` | Rollback ke JSONB generic |
-| `000004_full_schema.up.sql` | Schema lengkap V1.0 (NEW - target akhir) |
+| `000004_full_schema.up.sql` | Schema lengkap V1.0 (target akhir) |
 | `000004_full_schema.down.sql` | Rollback |
+| `000005_add_exchange_to_trading_pairs.up.sql` | Tambah kolom `exchange` ke `trading_pairs`, ubah unique constraint ke 3 kolom `(user_id, exchange, symbol)` |
+| `000005_add_exchange_to_trading_pairs.down.sql` | Rollback: hapus kolom `exchange`, kembalikan constraint 2 kolom |
+| `000006_add_report_interval.up.sql` | Tambah kolom `report_interval` dan `last_report_sent_at` ke `user_configs` |
+| `000006_add_report_interval.down.sql` | Rollback: hapus kedua kolom |
 
 ---
 
@@ -908,6 +922,16 @@ CREATE TRIGGER update_user_configs_modtime
 - `ai_feedback.decision_id` → `ai_decisions.id` ON DELETE CASCADE
 - `trade_executions.order_id` → `orders.id` ON DELETE CASCADE
 
+### Unique Constraints
+
+- `api_keys(user_id, exchange)` — satu API key per exchange per user
+- `user_configs(user_id)` — satu konfigurasi per user
+- `trading_pairs(user_id, exchange, symbol)` — satu pair per user per exchange *(diubah di migration 0005, sebelumnya2 kolom)*
+- `asset_inventory(user_id, asset)` — satu saldo per asset per user
+- `ai_prompt_versions(name, version)` — satu version per prompt name
+- `daily_reports(user_id, report_date)` — satu laporan per user per tanggal
+- `market_snapshots(symbol)` — satu snapshot per symbol
+
 ---
 
 ## FUTURE CONSIDERATIONS
@@ -953,6 +977,6 @@ CREATE TABLE system_logs (
 
 ---
 
-**Versi Dokumen:** 1.0
-**Terakhir Diupdate:**2026-06-05
+**Versi Dokumen:** 1.1
+**Terakhir Diupdate:** 2026-06-07
 **Maintainer:** NAFAS Dev Team
