@@ -56,18 +56,19 @@ const (
 //   - stopCh: chan struct{} — shutdown signal channel
 //   - wg: sync.WaitGroup — waitgroup untuk graceful shutdown workers
 type Bot struct {
-	token       string
-	webhookURL  string
-	authService *auth.Service
-	db          *sql.DB
-	exchange    exchange.Exchange
-	httpClient  *http.Client
-	logger      *logger.Logger
-	pairManager *scanner.PairManager
-	handlers    map[string]CommandHandler
-	jobQueue    chan Update
-	stopCh      chan struct{}
-	wg          sync.WaitGroup
+	token           string
+	webhookURL      string
+	authService     *auth.Service
+	db              *sql.DB
+	exchange        exchange.Exchange
+	httpClient      *http.Client
+	logger          *logger.Logger
+	pairManager     *scanner.PairManager
+	handlers        map[string]CommandHandler
+	jobQueue        chan Update
+	stopCh          chan struct{}
+	wg              sync.WaitGroup
+	maxPairsPerUser int
 }
 
 // CommandHandler defines a command handler function
@@ -103,12 +104,13 @@ type CommandHandler func(ctx context.Context, user *models.User, args string) (s
 // Output/Return Value:
 //   - BotConfig: struct konfigurasi
 type BotConfig struct {
-	Token       string
-	WebhookURL  string
-	AuthService *auth.Service
-	DB          *sql.DB
-	Exchange    exchange.Exchange
-	PairManager *scanner.PairManager
+	Token           string
+	WebhookURL      string
+	AuthService     *auth.Service
+	DB              *sql.DB
+	Exchange        exchange.Exchange
+	PairManager     *scanner.PairManager
+	MaxPairsPerUser int
 }
 
 // NewBotWithConfig creates a new Telegram bot with full dependencies
@@ -127,17 +129,18 @@ type BotConfig struct {
 //   - *Bot: pointer ke bot instance
 func NewBotWithConfig(config BotConfig) *Bot {
 	bot := &Bot{
-		token:       config.Token,
-		webhookURL:  config.WebhookURL,
-		authService: config.AuthService,
-		db:          config.DB,
-		exchange:    config.Exchange,
-		httpClient:  &http.Client{Timeout: 30 * time.Second},
-		logger:      logger.Default().WithField("module", "telegram"),
-		pairManager: config.PairManager,
-		handlers:    make(map[string]CommandHandler),
-		jobQueue:    make(chan Update, QueueSize),
-		stopCh:      make(chan struct{}),
+		token:           config.Token,
+		webhookURL:      config.WebhookURL,
+		authService:     config.AuthService,
+		db:              config.DB,
+		exchange:        config.Exchange,
+		httpClient:      &http.Client{Timeout: 30 * time.Second},
+		logger:          logger.Default().WithField("module", "telegram"),
+		pairManager:     config.PairManager,
+		handlers:        make(map[string]CommandHandler),
+		jobQueue:        make(chan Update, QueueSize),
+		stopCh:          make(chan struct{}),
+		maxPairsPerUser: config.MaxPairsPerUser,
 	}
 
 	bot.RegisterDefaultHandlers()
@@ -241,9 +244,10 @@ func (b *Bot) worker(id int) {
 //   - *Bot: pointer ke bot instance
 func NewBot(token string, authService *auth.Service, webhookURL string) *Bot {
 	return NewBotWithConfig(BotConfig{
-		Token:       token,
-		WebhookURL:  webhookURL,
-		AuthService: authService,
+		Token:           token,
+		WebhookURL:      webhookURL,
+		AuthService:     authService,
+		MaxPairsPerUser: 10,
 	})
 }
 
@@ -702,11 +706,12 @@ func (b *Bot) handleAddPair(ctx context.Context, user *models.User, args string)
 	}
 
 	exchangeName := strings.ToUpper(parts[0])
-	if exchangeName == "BINANCE" {
+	switch exchangeName {
+	case "BINANCE":
 		exchangeName = "Binance"
-	} else if exchangeName == "OKX" {
+	case "OKX":
 		exchangeName = "OKX"
-	} else {
+	default:
 		return "⚠️ Exchange tidak valid. Saat ini hanya mendukung: `Binance`, `OKX`.", nil, nil
 	}
 
@@ -720,12 +725,19 @@ func (b *Bot) handleAddPair(ctx context.Context, user *models.User, args string)
 
 	var added []string
 	var skipped []string
+	limitReached := false
 	for _, sym := range parts[1:] {
 		symbol := strings.ToUpper(sym)
 		if existingPairsMap[symbol] {
 			skipped = append(skipped, symbol)
 			continue
 		}
+
+		if initialCount+len(added) >= b.maxPairsPerUser {
+			limitReached = true
+			break
+		}
+
 		b.pairManager.AddUserPair(user.ID.String(), exchangeName, symbol)
 		added = append(added, symbol)
 		existingPairsMap[symbol] = true
@@ -733,6 +745,10 @@ func (b *Bot) handleAddPair(ctx context.Context, user *models.User, args string)
 
 	var msgBuilder strings.Builder
 	msgBuilder.WriteString(fmt.Sprintf("📊 Info: Sebelumnya Anda memiliki %d pair di %s.\n\n", initialCount, exchangeName))
+
+	if limitReached {
+		msgBuilder.WriteString(fmt.Sprintf("⚠️ Maksimal %d pair telah tercapai. Beberapa pair tidak ditambahkan.\n\n", b.maxPairsPerUser))
+	}
 
 	if len(added) > 0 {
 		msgBuilder.WriteString(fmt.Sprintf("✅ %d pair BARU berhasil ditambahkan:\n*%s*\n", len(added), strings.Join(added, ", ")))
@@ -762,11 +778,12 @@ func (b *Bot) handleRemovePair(ctx context.Context, user *models.User, args stri
 	}
 
 	exchangeName := strings.ToUpper(parts[0])
-	if exchangeName == "BINANCE" {
+	switch exchangeName {
+	case "BINANCE":
 		exchangeName = "Binance"
-	} else if exchangeName == "OKX" {
+	case "OKX":
 		exchangeName = "OKX"
-	} else {
+	default:
 		return "⚠️ Exchange tidak valid. Saat ini hanya mendukung: `Binance`, `OKX`.", nil, nil
 	}
 

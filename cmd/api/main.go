@@ -153,7 +153,7 @@ func main() {
 	var tradingOrchestrator *orchestrator.Orchestrator
 	if cfg.TradingAgentsURL != "" {
 		strategyEngine := strategy.NewStrategyEngine(db)
-		tradingOrchestrator = orchestrator.NewOrchestrator(db, binanceClient, marketScanner, taClient, strategyEngine)
+		tradingOrchestrator = orchestrator.NewOrchestrator(db, binanceClient, marketScanner, taClient, strategyEngine, cfg)
 		tradingOrchestrator.Start(context.Background())
 		logg.Info("Multi-account trading orchestrator started")
 	}
@@ -162,12 +162,13 @@ func main() {
 	var telegramBot *telegram.Bot
 	if cfg.TelegramBotToken != "" {
 		telegramBot = telegram.NewBotWithConfig(telegram.BotConfig{
-			Token:       cfg.TelegramBotToken,
-			WebhookURL:  cfg.TelegramWebhookURL,
-			AuthService: authService,
-			DB:          db,
-			Exchange:    binanceClient,
-			PairManager: pairManager,
+			Token:           cfg.TelegramBotToken,
+			WebhookURL:      cfg.TelegramWebhookURL,
+			AuthService:     authService,
+			DB:              db,
+			Exchange:        binanceClient,
+			PairManager:     pairManager,
+			MaxPairsPerUser: cfg.MaxPairsPerUser,
 		})
 		telegramBot.RegisterDefaultHandlers()
 		

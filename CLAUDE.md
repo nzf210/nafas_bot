@@ -460,3 +460,20 @@ curl http://localhost:8000/health
 ## FUTURE VISION
 
 Cross-chain trading, DEX integration, AI portfolio rotation engine, agent marketplace, and fully autonomous accumulation system.
+
+---
+
+## ENVIRONMENT CONFIGURATION
+
+Berikut adalah pengaturan parameter spesifik pada file `.env` yang digunakan untuk mengontrol perilaku bot:
+
+### Limitasi Pengguna
+- `MAX_PAIRS_PER_USER` (default: 10): Mengatur jumlah maksimal pair yang bisa dipantau oleh setiap pengguna. Berlaku saat pengguna mengeksekusi `/addpair`. Pair yang dimasukkan dobel atau sudah ada secara otomatis akan diabaikan (di-skip).
+
+### Threshold Perdagangan AI
+- `MIN_CONFIDENCE_THRESHOLD` (default: 85): Menentukan batas minimum tingkat keyakinan (confidence score, skala 0-100) dari AI TradingAgents. Jika hasil kalkulasi di bawah ini, sinyal tidak akan diteruskan ke eksekusi trade.
+- `MAX_RISK_LEVEL` (default: low): Menentukan tingkat risiko maksimal yang dapat diizinkan (`low`, `medium`, `high`, `extreme`) oleh *Risk Guardian*. Jika sebuah trade melampaui level ini, order tersebut akan diblokir.
+
+### Filter Pre-AI (Penyaring Sebelum Analisa)
+- `MIN_VOLATILITY_PERCENT` (default: 0.5): Batas minimal fluktuasi harga (volatilitas) yang terjadi pada beberapa candle terakhir (misal 15 menit terakhir). Jika volatilitas di bawah batas ini, koin sedang *sideways* mati dan otomatis di-skip untuk menghemat beban analitik AI.
+- `MIN_VOLUME_24H` (default: 100000): Syarat volume perdagangan 24 jam minimal agar koin layak dianalisa oleh AI. Koin yang sepi transaksi tidak akan diproses.

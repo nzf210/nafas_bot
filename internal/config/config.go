@@ -15,10 +15,12 @@ import (
 // Deskripsi: Memuat semua konfigurasi aplikasi dari environment variables.
 // Parameter/Value Input:
 //   - Tidak ada parameter input langsung, membaca dari os.Environ()
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - os.Getenv: dipanggil untuk membaca setiap environment variable
 //   - strconv.Atoi: dipanggil untuk konversi string ke int
 //   - time.ParseDuration: dipanggil untuk parsing duration string
+//
 // Output/Return Value:
 //   - *Config: pointer ke struct Config berisi semua konfigurasi
 //   - error: error jika konfigurasi wajib tidak ditemukan
@@ -74,6 +76,15 @@ func Load() (*Config, error) {
 	c.DefaultMaxRiskPerTrade, _ = strconv.ParseFloat(getEnv("DEFAULT_MAX_RISK_PER_TRADE", "1.0"), 64)
 	c.DefaultDailyLossLimit, _ = strconv.ParseFloat(getEnv("DEFAULT_DAILY_LOSS_LIMIT", "5.0"), 64)
 	c.DefaultMaxOpenPositions, _ = strconv.Atoi(getEnv("DEFAULT_MAX_OPEN_POSITIONS", "3"))
+	c.MaxPairsPerUser, _ = strconv.Atoi(getEnv("MAX_PAIRS_PER_USER", "10"))
+
+	// AI Trading Thresholds
+	c.MinConfidenceThreshold, _ = strconv.ParseFloat(getEnv("MIN_CONFIDENCE_THRESHOLD", "70.0"), 64)
+	c.MaxRiskLevel = getEnv("MAX_RISK_LEVEL", "medium")
+
+	// Pre-AI Filters
+	c.MinVolatilityPercent, _ = strconv.ParseFloat(getEnv("MIN_VOLATILITY_PERCENT", "0.5"), 64)
+	c.MinVolume24h, _ = strconv.ParseFloat(getEnv("MIN_VOLUME_24H", "100000"), 64)
 
 	return c, nil
 }
@@ -81,16 +92,16 @@ func Load() (*Config, error) {
 // Config holds all configuration
 type Config struct {
 	// App
-	AppEnv string
+	AppEnv  string
 	AppPort string
 
 	// Database
-	DBHost     string
-	DBPort     int
-	DBUser     string
-	DBPassword string
-	DBName     string
-	DBSSLMode  string
+	DBHost         string
+	DBPort         int
+	DBUser         string
+	DBPassword     string
+	DBName         string
+	DBSSLMode      string
 	DBMaxConns     int
 	DBMaxIdleConns int
 
@@ -101,7 +112,7 @@ type Config struct {
 	RedisDB       int
 
 	// Telegram
-	TelegramBotToken string
+	TelegramBotToken   string
 	TelegramWebhookURL string
 
 	// Encryption
@@ -111,7 +122,7 @@ type Config struct {
 	LLMProviderURL string
 	LLMAPIKey      string
 	LLMModel       string
-	LLMBaseURL string // Custom LLM base URL (Ollama, LM Studio, dll)
+	LLMBaseURL     string // Custom LLM base URL (Ollama, LM Studio, dll)
 
 	// TradingAgents
 	TradingAgentsURL string
@@ -120,9 +131,18 @@ type Config struct {
 	LogLevel string
 
 	// Trading defaults
-	DefaultMaxRiskPerTrade    float64
-	DefaultDailyLossLimit     float64
-	DefaultMaxOpenPositions   int
+	DefaultMaxRiskPerTrade  float64
+	DefaultDailyLossLimit   float64
+	DefaultMaxOpenPositions int
+	MaxPairsPerUser         int
+
+	// AI Trading Thresholds
+	MinConfidenceThreshold float64
+	MaxRiskLevel           string
+
+	// Pre-AI Filters
+	MinVolatilityPercent float64
+	MinVolume24h         float64
 }
 
 // DSN returns PostgreSQL connection string
