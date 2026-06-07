@@ -14,6 +14,7 @@ import (
 	"github.com/nzf210/nafas-bot/internal/auth"
 	"github.com/nzf210/nafas-bot/internal/logger"
 	"github.com/nzf210/nafas-bot/internal/models"
+	"github.com/shopspring/decimal"
 )
 
 // UserContext holds all data needed for a single user's trading execution.
@@ -151,8 +152,17 @@ func buildUserContext(ctx context.Context, db *sql.DB, user *models.User) (*User
 	`, user.ID).Scan(&config.MaxRiskPerTrade, &config.MaxAllocationPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
 		&config.NotifyOnTrade, &config.NotifyOnError, &config.AutoTradeEnabled)
 
-	if err != nil && err != sql.ErrNoRows {
-		logg.WithError(err).WithField("user_id", user.ID).Warn("Failed to get user config, using defaults")
+	if err != nil {
+		if err != sql.ErrNoRows {
+			logg.WithError(err).WithField("user_id", user.ID).Warn("Failed to get user config, using defaults")
+		}
+		config.MaxRiskPerTrade = decimal.NewFromFloat(1.0)
+		config.MaxAllocationPerTrade = decimal.NewFromFloat(10.0)
+		config.DailyLossLimit = decimal.NewFromFloat(5.0)
+		config.MaxOpenPositions = 3
+		config.NotifyOnTrade = true
+		config.NotifyOnError = true
+		config.AutoTradeEnabled = false
 	}
 
 	// Get trading pairs

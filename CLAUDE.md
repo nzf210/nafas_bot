@@ -476,7 +476,7 @@ Berikut adalah pengaturan parameter spesifik pada file `.env` yang digunakan unt
 - `DEFAULT_MAX_RISK_PER_TRADE` (default: 1.0): Persentase maksimal dari modal yang direlakan hilang jika harga menyentuh Stop-Loss.
   - **Jika dikecilkan (misal 0.5)**: Posisi yang dibuka sangat konservatif (lot kecil). Kerugian sangat terminimalisir tapi profit harian akan terasa lambat.
   - **Jika dibesarkan (misal 3.0)**: Posisi yang dibuka sangat agresif (lot besar). Potensi profit tinggi namun *drawdown* modal bisa sangat tajam jika salah arah.
-- `DEFAULT_MAX_ALLOCATION_PER_TRADE` (default: 50.0): Batas persentase modal keseluruhan (BTC balance) yang boleh digunakan dalam satu transaksi (Hard Cap), mengabaikan kalkulasi dinamis.
+- `DEFAULT_MAX_ALLOCATION_PER_TRADE` (default: 10.0): Batas persentase modal keseluruhan (BTC balance) yang boleh digunakan dalam satu transaksi (Hard Cap), mengabaikan kalkulasi dinamis.
   - **Jika dikecilkan (misal 10.0)**: Sekalipun *Risk Guardian* membolehkan beli banyak, bot hanya akan menggunakan maksimal 10% saldo per koin. Portofolio akan terdiversifikasi luas (banyak koin).
   - **Jika dibesarkan (misal 100.0)**: Bot diizinkan melakukan *All-in* 100% modal pada satu koin jika AI sangat yakin dan SL sangat ketat.
 - `DEFAULT_DAILY_LOSS_LIMIT` (default: 5.0): Batas rugi harian dalam persentase. Jika tercapai, bot berhenti trading (Cut-off) sampai hari berikutnya.
