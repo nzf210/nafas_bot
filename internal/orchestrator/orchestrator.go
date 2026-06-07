@@ -30,10 +30,6 @@ const (
 	// MaxConcurrentUsers adalah max jumlah user yang diproses concurrently.
 	// Dipilih 5 untuk avoid overwhelming exchange API rate limits.
 	MaxConcurrentUsers = 5
-
-	// CycleInterval adalah interval antar trading cycle.
-	// Default 15 menit - cukup sering untuk opportunistic trading.
-	CycleInterval = 15 * time.Minute
 )
 
 // Orchestrator coordinates trading across multiple user accounts.
@@ -144,10 +140,15 @@ func (o *Orchestrator) Stop() {
 func (o *Orchestrator) worker(ctx context.Context) {
 	defer o.wg.Done()
 
-	ticker := time.NewTicker(CycleInterval)
+	interval := o.config.ScannerCycleInterval
+	if interval == 0 {
+		interval = 7 * time.Minute
+	}
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	o.logger.Infof("Orchestrator worker started, cycle interval: %v", CycleInterval)
+	o.logger.Infof("Orchestrator worker started, cycle interval: %v", interval)
 
 	for {
 		select {

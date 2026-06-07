@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // Nama Function: Load
@@ -78,6 +79,9 @@ func Load() (*Config, error) {
 	c.DefaultDailyLossLimit, _ = strconv.ParseFloat(getEnv("DEFAULT_DAILY_LOSS_LIMIT", "5.0"), 64)
 	c.DefaultMaxOpenPositions, _ = strconv.Atoi(getEnv("DEFAULT_MAX_OPEN_POSITIONS", "3"))
 	c.MaxPairsPerUser, _ = strconv.Atoi(getEnv("MAX_PAIRS_PER_USER", "200"))
+	
+	// Scanner properties
+	c.ScannerCycleInterval, _ = time.ParseDuration(getEnv("SCANNER_CYCLE_INTERVAL", "7m"))
 
 	// AI Trading Thresholds
 	c.MinConfidenceThreshold, _ = strconv.ParseFloat(getEnv("MIN_CONFIDENCE_THRESHOLD", "70.0"), 64)
@@ -137,6 +141,9 @@ type Config struct {
 	DefaultDailyLossLimit        float64
 	DefaultMaxOpenPositions      int
 	MaxPairsPerUser              int
+	
+	// Scanner properties
+	ScannerCycleInterval time.Duration
 
 	// AI Trading Thresholds
 	MinConfidenceThreshold float64

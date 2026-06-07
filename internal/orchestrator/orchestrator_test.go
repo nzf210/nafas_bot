@@ -100,12 +100,3 @@ func TestMaxConcurrentUsersConstant(t *testing.T) {
 	}
 }
 
-// TestCycleIntervalConstant tests that cycle interval is reasonable
-func TestCycleIntervalConstant(t *testing.T) {
-	if CycleInterval < 1*time.Minute {
-		t.Error("CycleInterval should be at least 1 minute")
-	}
-	if CycleInterval > 60*time.Minute {
-		t.Error("CycleInterval should be at most 60 minutes")
-	}
-}
