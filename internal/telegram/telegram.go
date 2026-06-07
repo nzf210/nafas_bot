@@ -162,6 +162,9 @@ func (b *Bot) Start() {
 		b.wg.Add(1)
 		go b.worker(i)
 	}
+
+	b.StartReportScheduler()
+	b.logger.Info("Telegram bot worker pool and report scheduler started")
 }
 
 // Stop gracefully stops semua workers dan drain remaining jobs di queue.
@@ -268,6 +271,7 @@ func (b *Bot) RegisterDefaultHandlers() {
 	b.Register("positions", b.handlePositions)
 	b.Register("balance", b.handleBalance)
 	b.Register("report", b.handleReport)
+	b.Register("setreport", b.handleSetReport)
 	b.Register("profile", b.handleProfile)
 	b.Register("setapikey", b.handleSetAPIKey)
 	b.Register("api", b.handleSetAPIKey)
@@ -673,6 +677,7 @@ func (b *Bot) handleHelp(ctx context.Context, user *models.User, args string) (s
 *⚙️ SETTINGS*
 /addpair - Menambah pair baru untuk discan (contoh: /addpair Binance ADAUSDT)
 /removepair - Menghapus pair (contoh: /removepair Binance ADAUSDT)
+/setreport - Mengatur interval laporan (contoh: /setreport 5m, 1h, 24h)
 
 *💡 Quick Tips:*
 • Ketik /guide untuk panduan lengkap
@@ -1404,6 +1409,142 @@ Show report from last known data.
 *🕐 Generated:* %s
 
 Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTitle, totalTrades, completedTrades, winRate, netBTCGrowth, btcAccumulated, recentActivity, time.Now().Format("2006-01-02 15:04")), nil, nil
+}
+
+// handleSetReport handles /setreport command
+// Deskripsi: Handler untuk mengatur interval report user
+func (b *Bot) handleSetReport(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	if b.db == nil {
+		return "⚠️ Database not connected.", nil, nil
+	}
+
+	intervalStr := strings.TrimSpace(args)
+	if intervalStr == "" {
+		return "⚠️ Format salah.\nGunakan: `/setreport <interval>`\nContoh: `/setreport 5m`, `/setreport 1h`, `/setreport 24h`", nil, nil
+	}
+
+	// Validate interval
+	duration, err := time.ParseDuration(intervalStr)
+	if err != nil {
+		return "⚠️ Format interval tidak valid.\nGunakan format Golang durasi seperti `5m` (5 menit), `1h` (1 jam), `24h` (24 jam).", nil, nil
+	}
+	if duration <= 0 {
+		return "⚠️ Interval harus positif.\nContoh: `5m` (5 menit), `1h` (1 jam), `24h` (24 jam).", nil, nil
+	}
+
+	// Update DB
+	query := `
+		INSERT INTO user_configs (user_id, report_interval)
+		VALUES ($1, $2)
+		ON CONFLICT (user_id) DO UPDATE SET report_interval = $2
+	`
+	_, err = b.db.ExecContext(ctx, query, user.ID, intervalStr)
+	if err != nil {
+		b.logger.Errorf("Failed to update report interval for user %s: %v", user.ID, err)
+		return "❌ Gagal memperbarui konfigurasi report.", nil, nil
+	}
+
+	return fmt.Sprintf("✅ Laporan trading sekarang akan dikirimkan setiap *%s*.", intervalStr), nil, nil
+}
+
+// StartReportScheduler starts a background worker to send scheduled reports
+// Nama Function: StartReportScheduler
+func (b *Bot) StartReportScheduler() {
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-b.stopCh:
+				return
+			case <-ticker.C:
+				b.sendScheduledReports()
+			}
+		}
+	}()
+}
+
+func (b *Bot) sendScheduledReports() {
+	if b.db == nil {
+		return
+	}
+
+	ctx := context.Background()
+
+	// Get users with config — gunakan COALESCE untuk handle NULL last_report_sent_at
+	query := `
+		SELECT u.id, u.telegram_id, u.username, u.first_name, u.last_name,
+		       c.report_interval, COALESCE(c.last_report_sent_at, CURRENT_TIMESTAMP) as last_sent_at
+		FROM users u
+		JOIN user_configs c ON u.id = c.user_id
+		WHERE c.report_interval IS NOT NULL
+		  AND c.report_interval != ''
+		  AND c.report_interval != '0'
+	`
+	rows, err := b.db.QueryContext(ctx, query)
+	if err != nil {
+		b.logger.Errorf("Failed to query users for scheduled reports: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var u models.User
+		var reportInterval string
+		var lastSentAt time.Time
+
+		err := rows.Scan(&u.ID, &u.TelegramID, &u.Username, &u.FirstName, &u.LastName, &reportInterval, &lastSentAt)
+		if err != nil {
+			b.logger.Warnf("Failed to scan user for report: %v", err)
+			continue
+		}
+
+		duration, err := time.ParseDuration(reportInterval)
+		if err != nil {
+			b.logger.Warnf("Invalid duration format %s for user %s", reportInterval, u.ID)
+			continue
+		}
+
+		if time.Since(lastSentAt) < duration {
+			continue
+		}
+
+		// Update timestamp SEBELUM kirim — race condition prevention
+		// Ini memastikan meskipun telegram call gagal, user tidak akan di-trigger ulang
+		// dalam 1 menit yang sama (ticker interval)
+		result, err := b.db.ExecContext(ctx,
+			"UPDATE user_configs SET last_report_sent_at = NOW() WHERE user_id = $1 AND last_report_sent_at = $2",
+			u.ID, lastSentAt)
+		if err != nil {
+			b.logger.Errorf("Failed to lock report timestamp for user %s: %v", u.ID, err)
+			continue
+		}
+
+		rowsAffected, _ := result.RowsAffected()
+		if rowsAffected == 0 {
+			// another goroutine already sent — skip
+			b.logger.Debugf("Report already sent for user %s, skipping", u.ID)
+			continue
+		}
+
+		// Generate and send report
+		reportText, _, err := b.handleReport(ctx, &u, "")
+		if err != nil {
+			b.logger.Errorf("Failed to generate report for user %s: %v", u.ID, err)
+			continue
+		}
+
+		err = b.SendMessage(u.TelegramID, reportText, nil)
+		if err != nil {
+			b.logger.Errorf("Failed to send scheduled report to user %s: %v", u.ID, err)
+			continue
+		}
+
+		b.logger.Infof("Sent scheduled report to user %s (interval: %s)", u.ID, reportInterval)
+	}
 }
 
 // handleProfile handles /profile command — user profile & account status

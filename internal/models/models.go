@@ -127,6 +127,8 @@ type UserConfig struct {
 	NotifyOnTrade     bool    `json:"notify_on_trade" db:"notify_on_trade"`
 	NotifyOnError     bool    `json:"notify_on_error" db:"notify_on_error"`
 	DailyReportTime   string  `json:"daily_report_time" db:"daily_report_time"`
+	ReportInterval    string  `json:"report_interval" db:"report_interval"`
+	LastReportSentAt  time.Time `json:"last_report_sent_at" db:"last_report_sent_at"`
 	AutoTradeEnabled  bool    `json:"auto_trade_enabled" db:"auto_trade_enabled"`
 	CreatedAt         time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
