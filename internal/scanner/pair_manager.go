@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"database/sql"
+	"maps"
 	"sync"
 
 	"github.com/nzf210/nafas-bot/internal/logger"
@@ -106,7 +107,6 @@ func (pm *PairManager) RegisterScanner(exchangeName string, s *Scanner) {
 // Nama Function: AddUserPair
 func (pm *PairManager) AddUserPair(userID string, exchangeName string, symbol string) {
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
 
 	if pm.userPairs[userID] == nil {
 		pm.userPairs[userID] = make(map[string]map[string]bool)
@@ -117,6 +117,7 @@ func (pm *PairManager) AddUserPair(userID string, exchangeName string, symbol st
 
 	// Check if user already has this pair for this exchange
 	if pm.userPairs[userID][exchangeName][symbol] {
+		pm.mu.Unlock()
 		return
 	}
 
@@ -129,8 +130,9 @@ func (pm *PairManager) AddUserPair(userID string, exchangeName string, symbol st
 		`
 		_, err := pm.db.Exec(query, userID, exchangeName, symbol)
 		if err != nil {
-			pm.logger.Errorf("Failed to save pair to DB for user %s: %v", userID, err)
-			// Lanjut update memory agar tetep bisa dipakai (atau bisa return jika strict)
+			pm.logger.Errorf("Failed to save pair to DB for user %s (%s/%s): %v — pair NOT persisted to DB", userID, exchangeName, symbol, err)
+			pm.mu.Unlock()
+			return
 		}
 	}
 
@@ -151,6 +153,8 @@ func (pm *PairManager) AddUserPair(userID string, exchangeName string, symbol st
 			scanner.AddSymbol(symbol)
 		}
 	}
+
+	pm.mu.Unlock()
 }
 
 // RemoveUserPair removes a symbol from a user's tracking list.
@@ -217,10 +221,7 @@ func (pm *PairManager) GetMasterPairs() map[string]map[string]int {
 
 	result := make(map[string]map[string]int)
 	for exchangeName, symbols := range pm.masterPairs {
-		result[exchangeName] = make(map[string]int)
-		for symbol, count := range symbols {
-			result[exchangeName][symbol] = count
-		}
+		result[exchangeName] = maps.Clone(symbols)
 	}
 	return result
 }

@@ -79,16 +79,25 @@ func main() {
 	logg.Info("Database connected")
 
 	// Auto-apply recent schema migrations programmatically
-	autoMigrateQueries := []string{
-		"ALTER TABLE trading_pairs ADD COLUMN IF NOT EXISTS exchange VARCHAR(50) DEFAULT 'Binance';",
-		"ALTER TABLE trading_pairs DROP CONSTRAINT IF EXISTS unique_user_exchange_symbol;",
-		"ALTER TABLE trading_pairs ADD CONSTRAINT unique_user_exchange_symbol UNIQUE (user_id, exchange, symbol);",
-		"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS report_interval VARCHAR(20) DEFAULT '24h';",
-		"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS last_report_sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;",
+	autoMigrateQueries := []struct {
+		sql       string
+		desc      string
+		critical  bool // if true, exit app if this migration fails
+	}{
+		{"ALTER TABLE trading_pairs ADD COLUMN IF NOT EXISTS exchange VARCHAR(50) DEFAULT 'Binance';", "add exchange column to trading_pairs", true},
+		{"ALTER TABLE trading_pairs DROP CONSTRAINT IF EXISTS unique_user_exchange_symbol;", "drop old unique constraint (no-op if not exists)", false},
+		{"ALTER TABLE trading_pairs ADD CONSTRAINT unique_user_exchange_symbol UNIQUE (user_id, exchange, symbol);", "add unique constraint (ignore if already exists)", false},
+		{"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS report_interval VARCHAR(20) DEFAULT '24h';", "add report_interval column to user_configs", false},
+		{"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS last_report_sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;", "add last_report_sent_at column to user_configs", false},
 	}
-	for _, q := range autoMigrateQueries {
-		if _, err := db.Exec(q); err != nil {
-			logg.Warnf("Auto-migration note: %v", err)
+	for _, m := range autoMigrateQueries {
+		if _, err := db.Exec(m.sql); err != nil {
+			if m.critical {
+				logg.Fatalf("CRITICAL auto-migration failed [%s]: %v — app cannot start without this column", m.desc, err)
+			}
+			logg.Warnf("Non-critical auto-migration skipped [%s]: %v", m.desc, err)
+		} else {
+			logg.Infof("Auto-migration applied: %s", m.desc)
 		}
 	}
 
