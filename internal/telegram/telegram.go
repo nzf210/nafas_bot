@@ -994,6 +994,10 @@ func (b *Bot) handleSettings(ctx context.Context, user *models.User, args string
 		`, user.ID).Scan(&config.MaxRiskPerTrade, &config.MaxAllocationPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
 			&config.NotifyOnTrade, &config.NotifyOnError, &config.AutoTradeEnabled)
 
+		b.logger.Debugf("handleSettings: userID=%s, query err=%v, config={maxRisk:%s, maxAlloc:%s, dailyLoss:%s, maxPos:%d, autoTrade:%v}",
+			user.ID.String(), err, config.MaxRiskPerTrade.String(), config.MaxAllocationPerTrade.String(),
+			config.DailyLossLimit.String(), config.MaxOpenPositions, config.AutoTradeEnabled)
+
 		if err == nil {
 			maxRisk = config.MaxRiskPerTrade.String()
 			maxAllocation = config.MaxAllocationPerTrade.String()
@@ -1008,6 +1012,8 @@ func (b *Bot) handleSettings(ctx context.Context, user *models.User, args string
 			if config.AutoTradeEnabled {
 				autoTrade = "✅ Enabled"
 			}
+		} else {
+			b.logger.Warnf("handleSettings: failed to read config for userID=%s, using defaults", user.ID.String())
 		}
 	}
 
@@ -1863,6 +1869,7 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, user *models.User, cbq *C
 
 	switch {
 	case data == "settings_refresh":
+		b.logger.Debugf("handleCallbackQuery: settings_refresh callback for userID=%s", user.ID.String())
 		b.SendMessage(int64(cbq.From.ID), "🔄 Refreshing settings...", nil)
 		// Re-call handleSettings
 		response, markup, _ := b.handleSettings(ctx, user, "")
@@ -1911,23 +1918,30 @@ Ketik /setallocation <nilai> untuk mengubah.
 Contoh: /setallocation 25`, nil)
 
 	case data == "settings_tradealerts":
+		b.logger.Debugf("handleCallbackQuery: settings_tradealerts toggle for userID=%s", user.ID.String())
 		if b.db != nil {
 			var current bool
 			err := b.db.QueryRowContext(ctx, `
 				SELECT COALESCE(notify_on_trade, true) FROM user_configs WHERE user_id = $1
-			`, user.ID).Scan(&current)
+			`, user.ID.String()).Scan(&current)
 			// If no row exists, current stays as default true
 			if err != nil && err != sql.ErrNoRows {
-				b.logger.Errorf("Failed to get trade alerts status: %v", err)
+				b.logger.Errorf("handleCallbackQuery: settings_tradealerts failed to read, userID=%s, err=%v", user.ID.String(), err)
 			}
 			newValue := !current
+			b.logger.Debugf("handleCallbackQuery: settings_tradealerts toggle current=%v -> newValue=%v", current, newValue)
 			_, err = b.db.ExecContext(ctx, `
 				INSERT INTO user_configs (user_id, notify_on_trade)
 				VALUES ($1, $2)
 				ON CONFLICT (user_id) DO UPDATE SET
 					notify_on_trade = EXCLUDED.notify_on_trade,
 					updated_at = CURRENT_TIMESTAMP
-			`, user.ID, newValue)
+			`, user.ID.String(), newValue)
+			if err != nil {
+				b.logger.Errorf("handleCallbackQuery: settings_tradealerts failed to save, userID=%s, err=%v", user.ID.String(), err)
+			} else {
+				b.logger.Infof("handleCallbackQuery: settings_tradealerts saved, userID=%s, newValue=%v", user.ID.String(), newValue)
+			}
 			if err == nil {
 				status := "❌ Off"
 				if newValue {
@@ -1941,23 +1955,30 @@ Contoh: /setallocation 25`, nil)
 		b.SendMessage(int64(cbq.From.ID), response, markup)
 
 	case data == "settings_erroralerts":
+		b.logger.Debugf("handleCallbackQuery: settings_erroralerts toggle for userID=%s", user.ID.String())
 		if b.db != nil {
 			var current bool
 			err := b.db.QueryRowContext(ctx, `
 				SELECT COALESCE(notify_on_error, true) FROM user_configs WHERE user_id = $1
-			`, user.ID).Scan(&current)
+			`, user.ID.String()).Scan(&current)
 			// If no row exists, current stays as default true
 			if err != nil && err != sql.ErrNoRows {
-				b.logger.Errorf("Failed to get error alerts status: %v", err)
+				b.logger.Errorf("handleCallbackQuery: settings_erroralerts failed to read, userID=%s, err=%v", user.ID.String(), err)
 			}
 			newValue := !current
+			b.logger.Debugf("handleCallbackQuery: settings_erroralerts toggle current=%v -> newValue=%v", current, newValue)
 			_, err = b.db.ExecContext(ctx, `
 				INSERT INTO user_configs (user_id, notify_on_error)
 				VALUES ($1, $2)
 				ON CONFLICT (user_id) DO UPDATE SET
 					notify_on_error = EXCLUDED.notify_on_error,
 					updated_at = CURRENT_TIMESTAMP
-			`, user.ID, newValue)
+			`, user.ID.String(), newValue)
+			if err != nil {
+				b.logger.Errorf("handleCallbackQuery: settings_erroralerts failed to save, userID=%s, err=%v", user.ID.String(), err)
+			} else {
+				b.logger.Infof("handleCallbackQuery: settings_erroralerts saved, userID=%s, newValue=%v", user.ID.String(), newValue)
+			}
 			if err == nil {
 				status := "❌ Off"
 				if newValue {
@@ -1971,23 +1992,30 @@ Contoh: /setallocation 25`, nil)
 		b.SendMessage(int64(cbq.From.ID), response, markup)
 
 	case data == "settings_autotrade":
+		b.logger.Debugf("handleCallbackQuery: settings_autotrade toggle for userID=%s", user.ID.String())
 		if b.db != nil {
 			var current bool
 			err := b.db.QueryRowContext(ctx, `
 				SELECT COALESCE(auto_trade_enabled, false) FROM user_configs WHERE user_id = $1
-			`, user.ID).Scan(&current)
+			`, user.ID.String()).Scan(&current)
 			// If no row exists, current stays as default false
 			if err != nil && err != sql.ErrNoRows {
-				b.logger.Errorf("Failed to get auto trade status: %v", err)
+				b.logger.Errorf("handleCallbackQuery: settings_autotrade failed to read, userID=%s, err=%v", user.ID.String(), err)
 			}
 			newValue := !current
+			b.logger.Debugf("handleCallbackQuery: settings_autotrade toggle current=%v -> newValue=%v", current, newValue)
 			_, err = b.db.ExecContext(ctx, `
 				INSERT INTO user_configs (user_id, auto_trade_enabled)
 				VALUES ($1, $2)
 				ON CONFLICT (user_id) DO UPDATE SET
 					auto_trade_enabled = EXCLUDED.auto_trade_enabled,
 					updated_at = CURRENT_TIMESTAMP
-			`, user.ID, newValue)
+			`, user.ID.String(), newValue)
+			if err != nil {
+				b.logger.Errorf("handleCallbackQuery: settings_autotrade failed to save, userID=%s, err=%v", user.ID.String(), err)
+			} else {
+				b.logger.Infof("handleCallbackQuery: settings_autotrade saved, userID=%s, newValue=%v", user.ID.String(), newValue)
+			}
 			if err == nil {
 				status := "❌ Disabled"
 				if newValue {
@@ -2099,16 +2127,20 @@ func (b *Bot) handleSetRisk(ctx context.Context, user *models.User, args string)
 	}
 
 	if b.db != nil {
-		_, err = b.db.ExecContext(ctx, `
+		b.logger.Debugf("handleSetRisk: userID=%s, riskValue=%s", user.ID.String(), risk.String())
+		result, err := b.db.ExecContext(ctx, `
 			INSERT INTO user_configs (user_id, max_risk_per_trade)
 			VALUES ($1, $2)
 			ON CONFLICT (user_id) DO UPDATE SET
 				max_risk_per_trade = EXCLUDED.max_risk_per_trade,
 				updated_at = CURRENT_TIMESTAMP
-		`, user.ID, risk)
+		`, user.ID.String(), risk.String())
 		if err != nil {
+			b.logger.Errorf("handleSetRisk: failed to save, err=%v", err)
 			return "📊 *Set Risk — Error*\n\nGagal menyimpan pengaturan.", nil, err
 		}
+		rowsAffected, _ := result.RowsAffected()
+		b.logger.Infof("handleSetRisk: saved successfully, rowsAffected=%d", rowsAffected)
 	}
 
 	return fmt.Sprintf("📊 *Risk Updated*\n\nMax Risk/Trade: %s%%\n\n✅ Pengaturan berhasil disimpan.", risk.String()), nil, nil
@@ -2130,16 +2162,19 @@ func (b *Bot) handleSetRisk(ctx context.Context, user *models.User, args string)
 //   - interface{}: inline keyboard (nil)
 //   - error: error jika proses gagal
 func (b *Bot) handleSetAllocation(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	b.logger.Debugf("handleSetAllocation: userID=%s, args=%s", user.ID.String(), args)
 	if args == "" {
 		return "📊 *Set Allocation — Error*\n\nUsage: /setallocation <nilai>\n\nContoh: /setallocation 50\n\nNilai harus antara 5.0 - 100.0%", nil, nil
 	}
 
 	alloc, err := decimalFromString(args)
 	if err != nil || alloc.LessThan(decimal.NewFromFloat(5.0)) || alloc.GreaterThan(decimal.NewFromFloat(100.0)) {
+		b.logger.Warnf("handleSetAllocation: invalid value userID=%s, args=%s, err=%v", user.ID.String(), args, err)
 		return "📊 *Set Allocation — Error*\n\nNilai tidak valid. Masukkan angka antara 5.0 - 100.0\n\nContoh: /setallocation 50", nil, nil
 	}
 
 	if b.db != nil {
+		b.logger.Debugf("handleSetAllocation: saving userID=%s, alloc=%s", user.ID.String(), alloc.String())
 		_, err = b.db.ExecContext(ctx, `
 			INSERT INTO user_configs (user_id, max_allocation_per_trade)
 			VALUES ($1, $2)
@@ -2148,9 +2183,11 @@ func (b *Bot) handleSetAllocation(ctx context.Context, user *models.User, args s
 				updated_at = CURRENT_TIMESTAMP
 		`, user.ID.String(), alloc.String())
 		if err != nil {
+			b.logger.Errorf("handleSetAllocation: failed to save userID=%s, err=%v", user.ID.String(), err)
 			// Return nil for error so processCommand doesn't override our detailed message
 			return fmt.Sprintf("📊 *Set Allocation — Error*\n\nGagal menyimpan pengaturan: %v", err), nil, nil
 		}
+		b.logger.Infof("handleSetAllocation: saved successfully userID=%s, alloc=%s", user.ID.String(), alloc.String())
 	}
 
 	return fmt.Sprintf("📊 *Allocation Updated*\n\nMax Allocation/Trade: %s%%\n\n✅ Pengaturan berhasil disimpan.", alloc.String()), nil, nil
@@ -2172,16 +2209,19 @@ func (b *Bot) handleSetAllocation(ctx context.Context, user *models.User, args s
 //   - interface{}: inline keyboard (nil)
 //   - error: error jika proses gagal
 func (b *Bot) handleSetDailyLoss(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+	b.logger.Debugf("handleSetDailyLoss: userID=%s, args=%s", user.ID.String(), args)
 	if args == "" {
 		return "📉 *Set Daily Loss — Error*\n\nUsage: /setdailyloss <nilai>\n\nContoh: /setdailyloss 5\n\nNilai dalam persen (1-20%)", nil, nil
 	}
 
 	loss, err := decimalFromString(args)
 	if err != nil || loss.LessThan(decimal.NewFromFloat(1)) || loss.GreaterThan(decimal.NewFromFloat(20)) {
+		b.logger.Warnf("handleSetDailyLoss: invalid value userID=%s, args=%s, err=%v", user.ID.String(), args, err)
 		return "📉 *Set Daily Loss — Error*\n\nNilai tidak valid. Masukkan angka antara 1 - 20%\n\nContoh: /setdailyloss 5", nil, nil
 	}
 
 	if b.db != nil {
+		b.logger.Debugf("handleSetDailyLoss: saving userID=%s, loss=%s", user.ID.String(), loss.String())
 		_, err = b.db.ExecContext(ctx, `
 			INSERT INTO user_configs (user_id, daily_loss_limit)
 			VALUES ($1, $2)
@@ -2190,8 +2230,10 @@ func (b *Bot) handleSetDailyLoss(ctx context.Context, user *models.User, args st
 				updated_at = CURRENT_TIMESTAMP
 		`, user.ID.String(), loss.String())
 		if err != nil {
+			b.logger.Errorf("handleSetDailyLoss: failed to save userID=%s, err=%v", user.ID.String(), err)
 			return fmt.Sprintf("📉 *Set Daily Loss — Error*\n\nGagal menyimpan pengaturan: %v", err), nil, nil
 		}
+		b.logger.Infof("handleSetDailyLoss: saved successfully userID=%s, loss=%s", user.ID.String(), loss.String())
 	}
 
 	return fmt.Sprintf("📉 *Daily Loss Updated*\n\nDaily Loss Limit: %s%%\n\n✅ Pengaturan berhasil disimpan.", loss.String()), nil, nil
