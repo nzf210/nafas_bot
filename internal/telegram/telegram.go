@@ -1287,6 +1287,9 @@ func (b *Bot) handleGuide(ctx context.Context, user *models.User, args string) (
 • /settings — Lihat & ubah pengaturan
 • /setapikey — Setup API key exchange (self-service)
 • /profile — Lihat status & statistik akun
+• /addpair — Tambah pair (contoh: /addpair Binance ADAUSDT)
+• /removepair — Hapus pair (contoh: /removepair Binance ADAUSDT)
+• /setreport — Atur jadwal report (contoh: /setreport 5m, 1h, 24h)
 
 *📊 MONITORING*
 • /dashboard — Status sistem & auto-trade
@@ -1294,6 +1297,7 @@ func (b *Bot) handleGuide(ctx context.Context, user *models.User, args string) (
 • /balance — Saldo di exchange
 • /positions — Posisi terbuka & P/L
 • /report — Laporan harian/mingguan
+• /mypairs — Lihat daftar pair pantauan Anda
 
 *🔍 SYSTEM STATUS*
 • /status — Kesehatan sistem (DB, Redis, AI)
@@ -1314,7 +1318,8 @@ func (b *Bot) handleGuide(ctx context.Context, user *models.User, args string) (
 *💡 TIPS*
 • Aktifkan auto-trade di /settings
 • Set notifikasi untuk setiap trade
-• Cek /report setiap hari
+• Gunakan /setreport agar report terkirim teratur
+• Cek /mypairs sesekali untuk memastikan pair Anda valid
 • Hubungi admin jika ada error
 
 *📋 FLOW PENGGUNAAN*
