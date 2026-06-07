@@ -710,14 +710,43 @@ func (b *Bot) handleAddPair(ctx context.Context, user *models.User, args string)
 		return "⚠️ Exchange tidak valid. Saat ini hanya mendukung: `Binance`, `OKX`.", nil, nil
 	}
 
-	var added []string
-	for _, sym := range parts[1:] {
-		symbol := strings.ToUpper(sym)
-		b.pairManager.AddUserPair(user.ID.String(), exchangeName, symbol)
-		added = append(added, symbol)
+	currentPairs := b.pairManager.GetUserPairs(user.ID.String())[exchangeName]
+	initialCount := len(currentPairs)
+
+	existingPairsMap := make(map[string]bool)
+	for _, p := range currentPairs {
+		existingPairsMap[p] = true
 	}
 
-	return fmt.Sprintf("✅ %d pair berhasil ditambahkan ke list %s Anda:\n*%s*", len(added), exchangeName, strings.Join(added, ", ")), nil, nil
+	var added []string
+	var skipped []string
+	for _, sym := range parts[1:] {
+		symbol := strings.ToUpper(sym)
+		if existingPairsMap[symbol] {
+			skipped = append(skipped, symbol)
+			continue
+		}
+		b.pairManager.AddUserPair(user.ID.String(), exchangeName, symbol)
+		added = append(added, symbol)
+		existingPairsMap[symbol] = true
+	}
+
+	var msgBuilder strings.Builder
+	msgBuilder.WriteString(fmt.Sprintf("📊 Info: Sebelumnya Anda memiliki %d pair di %s.\n\n", initialCount, exchangeName))
+
+	if len(added) > 0 {
+		msgBuilder.WriteString(fmt.Sprintf("✅ %d pair BARU berhasil ditambahkan:\n*%s*\n", len(added), strings.Join(added, ", ")))
+	} else {
+		msgBuilder.WriteString("⚠️ Tidak ada pair baru yang ditambahkan.\n")
+	}
+
+	if len(skipped) > 0 {
+		msgBuilder.WriteString(fmt.Sprintf("⏭️ %d pair di-skip (sudah ada/dobel):\n*%s*\n", len(skipped), strings.Join(skipped, ", ")))
+	}
+
+	msgBuilder.WriteString(fmt.Sprintf("\n📈 Total pair Anda sekarang di %s: %d", exchangeName, len(existingPairsMap)))
+
+	return msgBuilder.String(), nil, nil
 }
 
 // handleRemovePair handles /removepair command
