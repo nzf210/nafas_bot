@@ -146,8 +146,8 @@ func buildUserContext(ctx context.Context, db *sql.DB, user *models.User) (*User
 	// Get user config
 	var config models.UserConfig
 	err = db.QueryRowContext(ctx, `
-		SELECT COALESCE(max_risk_per_trade, 1.0), COALESCE(max_allocation_per_trade, 10.0), COALESCE(daily_loss_limit, 5.0), max_open_positions,
-			   notify_on_trade, notify_on_error, auto_trade_enabled
+		SELECT COALESCE(max_risk_per_trade, 1.0), COALESCE(max_allocation_per_trade, 10.0), COALESCE(daily_loss_limit, 5.0), COALESCE(max_open_positions, 3),
+			   COALESCE(notify_on_trade, true), COALESCE(notify_on_error, true), COALESCE(auto_trade_enabled, false)
 		FROM user_configs WHERE user_id = $1
 	`, user.ID).Scan(&config.MaxRiskPerTrade, &config.MaxAllocationPerTrade, &config.DailyLossLimit, &config.MaxOpenPositions,
 		&config.NotifyOnTrade, &config.NotifyOnError, &config.AutoTradeEnabled)
@@ -163,6 +163,11 @@ func buildUserContext(ctx context.Context, db *sql.DB, user *models.User) (*User
 		config.NotifyOnTrade = true
 		config.NotifyOnError = true
 		config.AutoTradeEnabled = false
+	} else {
+		// Ensure MaxOpenPositions has a sane default (should not be 0)
+		if config.MaxOpenPositions == 0 {
+			config.MaxOpenPositions = 3
+		}
 	}
 
 	// Get trading pairs

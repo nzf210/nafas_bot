@@ -206,7 +206,7 @@ func (o *Orchestrator) runCycle(ctx context.Context) error {
 	o.logger.Infof("Found %d users with auto-trade enabled", len(users))
 
 	// Sync user pairs to scanner BEFORE market scan
-	o.syncUserPairsToScanner(ctx, users)
+	o.syncUserPairsToScanner()
 
 	// Scan market data ONCE for all users
 	marketData := o.ScanMarket(ctx)
@@ -247,36 +247,31 @@ func (o *Orchestrator) runCycle(ctx context.Context) error {
 // along with the default system pairs.
 // Nama Function: syncUserPairsToScanner
 // Deskripsi: Mensinkronkan semua user pairs ke scanner sebelum market scan.
-// Ini memastikan bahwa user-configured pairs (e.g., SOLBTC, NEARBTC) di-scan
-//   bersama dengan default system pairs.
+// Menggunakan PairManager sebagai authorative source untuk semua pair.
+// Tidak perlu parameter karena membaca langsung dari pairManager.
 //
 // Parameter/Value Input:
-//   - ctx: context.Context — context untuk database operation
-//   - users: []models.User — list user aktif
+//   - Tidak ada (menggunakan o.pairManager secara internal)
 //
 // Function yang Dipanggil/Dikonsumsi:
-//   - GetUserContext: dipanggil untuk ambil user context dan pairs
+//   - pairManager.GetMasterPairs: dipanggil untuk ambil semua pair aktif
 //   - scanner.AddSymbol: dipanggil untuk tambahkan symbol ke scanner
 //
 // Output/Return Value:
 //   - Tidak ada return value langsung
-func (o *Orchestrator) syncUserPairsToScanner(ctx context.Context, users []models.User) {
+func (o *Orchestrator) syncUserPairsToScanner() {
 	if o.pairManager == nil {
 		o.logger.Warn("PairManager not configured, skipping user pair sync")
 		return
 	}
 
-	// Collect all unique pairs from all users
+	// Collect all unique pairs from PairManager (authoritative source)
 	allPairs := make(map[string]bool)
-	for _, user := range users {
-		userCtx, err := GetUserContext(ctx, o.db, &user)
-		if err != nil || userCtx == nil {
-			continue
+	for exchangeName, symbols := range o.pairManager.GetMasterPairs() {
+		for symbol := range symbols {
+			allPairs[symbol] = true
 		}
-
-		for _, pair := range userCtx.Pairs {
-			allPairs[pair.Symbol] = true
-		}
+		o.logger.Debugf("PairManager %s has %d pairs", exchangeName, len(symbols))
 	}
 
 	// Add each unique pair to the scanner
@@ -287,7 +282,9 @@ func (o *Orchestrator) syncUserPairsToScanner(ctx context.Context, users []model
 	}
 
 	if addedCount > 0 {
-		o.logger.Infof("Synced %d user pairs to scanner", addedCount)
+		o.logger.Infof("Synced %d pairs from PairManager to scanner", addedCount)
+	} else {
+		o.logger.Warn("No pairs found in PairManager — scanner will scan with empty symbol list")
 	}
 }
 
@@ -448,11 +445,15 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 		// 1. Check 24h Volume
 		volumeFloat, _ := data.Volume24h.Float64()
 		if volumeFloat < o.config.MinVolume24h {
-			userLogger.WithField("symbol", pair.Symbol).WithField("volume", volumeFloat).WithField("min_volume", o.config.MinVolume24h).Info("Pair rejected: 24h volume too low")
+			userLogger.WithField("symbol", pair.Symbol).
+				WithField("volume_usd", fmt.Sprintf("%.2f", volumeFloat)).
+				WithField("min_volume_usd", fmt.Sprintf("%.2f", o.config.MinVolume24h)).
+				Debug("Pair filtered: 24h volume below threshold")
 			continue
 		}
 
 		// 2. Check Volatility (Last 3 candles, e.g. 15m if interval is 5m)
+		passedFilter := false
 		if len(data.Candles) > 0 {
 			minLow := data.Candles[len(data.Candles)-1].Low
 			maxHigh := data.Candles[len(data.Candles)-1].High
@@ -474,10 +475,20 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			if minLowFloat > 0 {
 				volatility := ((maxHighFloat - minLowFloat) / minLowFloat) * 100
 				if volatility < o.config.MinVolatilityPercent {
-					userLogger.WithField("symbol", pair.Symbol).WithField("volatility", volatility).WithField("min_volatility", o.config.MinVolatilityPercent).Info("Pair rejected: volatility too low for AI analysis")
+					userLogger.WithField("symbol", pair.Symbol).
+						WithField("volatility_pct", fmt.Sprintf("%.4f", volatility)).
+						WithField("min_volatility_pct", fmt.Sprintf("%.4f", o.config.MinVolatilityPercent)).
+						Debug("Pair filtered: volatility below threshold")
 					continue
 				}
+				passedFilter = true
 			}
+		}
+
+		if passedFilter {
+			userLogger.WithField("symbol", pair.Symbol).
+				WithField("volume_usd", fmt.Sprintf("%.2f", volumeFloat)).
+				Info("Pair passed scanner filters, sending to AI")
 		}
 		// ---------------------------------------------------------
 

@@ -89,6 +89,13 @@ func (s *Service) GetOrCreateUser(ctx context.Context, telegramID int64, usernam
 //   - *models.User: user yang baru dibuat
 //   - error: error database
 func (s *Service) CreateUser(ctx context.Context, telegramID int64, username, firstName, lastName string) (*models.User, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Insert user
 	query := `
 		INSERT INTO users (telegram_id, username, first_name, last_name, status, wch_balance)
 		VALUES ($1, $2, $3, $4, 'active', 0)
@@ -97,7 +104,7 @@ func (s *Service) CreateUser(ctx context.Context, telegramID int64, username, fi
 	var user models.User
 	var usernameOpt, firstNameOpt, lastNameOpt sql.NullString
 
-	err := s.db.QueryRowContext(ctx, query, telegramID, nullString(username), nullString(firstName), nullString(lastName)).Scan(
+	err = tx.QueryRowContext(ctx, query, telegramID, nullString(username), nullString(firstName), nullString(lastName)).Scan(
 		&user.ID,
 		&user.TelegramID,
 		&usernameOpt,
@@ -116,7 +123,21 @@ func (s *Service) CreateUser(ctx context.Context, telegramID int64, username, fi
 	user.FirstName = nullStringToPtr(firstNameOpt)
 	user.LastName = nullStringToPtr(lastNameOpt)
 
-	logger.Default().WithField("module", "auth").Infof("Created new user: %d", telegramID)
+	// Auto-create user_configs with safe defaults (auto_trade_enabled=false)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO user_configs (user_id, max_open_positions, auto_trade_enabled)
+		VALUES ($1, 3, false)
+		ON CONFLICT (user_id) DO NOTHING
+	`, user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create user_config: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	logger.Default().WithField("module", "auth").Infof("Created new user with configs: %d", telegramID)
 	return &user, nil
 }
 
@@ -161,7 +182,7 @@ func (s *Service) GetByTelegramID(ctx context.Context, telegramID int64) (*model
 	return &user, nil
 }
 
-func nullString(s string) interface{} {
+func nullString(s string) any {
 	if s == "" {
 		return nil
 	}
