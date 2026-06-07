@@ -498,3 +498,22 @@ Berikut adalah pengaturan parameter spesifik pada file `.env` yang digunakan unt
 - `MIN_VOLUME_24H` (default: 100000): Volume 24 jam minimal agar koin diproses.
   - **Jika dikecilkan (misal 10000)**: Koin "*shitcoin*" sepi transaksi akan ikut dianalisa, berisiko nyangkut saat beli/jual karena tidak ada likuiditas.
   - **Jika dibesarkan (misal 5000000)**: Hanya koin-koin berkapitalisasi raksasa (Top 20 CMC) yang akan di-scan. Beban sistem jauh lebih ringan.
+
+---
+
+## FRONTEND & EXCHANGE INTEGRATION PLAN
+
+Sistem ini sedang bertransisi menuju ketersediaan antarmuka admin dan dukungan multi-exchange. Dokumen lengkap tersedia di proposal, namun berikut adalah acuan utamanya.
+
+### 1. Frontend (Admin Dashboard)
+- **Lokasi**: Terletak di `/frontend`.
+- **Tech Stack**: Vue 3, Vite, TypeScript, Pinia, Vue Router.
+- **Styling**: Vanilla CSS (CSS Variables) atau TailwindCSS dengan fokus pada estetika *premium*, *dark mode*, dan animasi mikro.
+- **Tujuan**: Memvisualisasikan PnL, metrik portofolio, memonitor log scanner/AI secara real-time, mengatur parameter risiko per user, dan integrasi key API.
+- **Package Manager**: **WAJIB** menggunakan `bun` dan `bunx`.
+
+### 2. Exchange Expansion
+Sistem saat ini menggunakan Binance. Untuk menambahkan Exchange baru (contoh: OKX/Bybit):
+1. Pindahkan definisi `Exchange` interface ke `internal/exchange/exchange.go`.
+2. Buat _factory method_ `NewExchange(name string)`.
+3. Tambahkan implementasi *exchange* spesifik seperti `internal/exchange/okx.go` yang mendukung API authentication (e.g. HMAC SHA256), translasi *symbol*, *candles*, dan eksekusi order sesuai struktur interface yang ada.

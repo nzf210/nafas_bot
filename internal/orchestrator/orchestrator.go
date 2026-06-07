@@ -143,25 +143,29 @@ func (o *Orchestrator) Stop() {
 func (o *Orchestrator) worker(ctx context.Context) {
 	defer o.wg.Done()
 
-	interval := o.config.ScannerCycleInterval
-	if interval == 0 {
-		interval = 7 * time.Minute
-	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	o.logger.Infof("Orchestrator worker started, cycle interval: %v", interval)
+	o.logger.Info("Orchestrator worker started")
 
 	for {
+		// Baca interval dari config setiap iterasi agar perubahan .env langsung tercermin
+		interval := o.config.ScannerCycleInterval
+		if interval == 0 {
+			interval = 7 * time.Minute
+		}
+
+		ticker := time.NewTicker(interval)
+		o.logger.Infof("Orchestrator cycle interval: %v", interval)
+
 		select {
 		case <-ctx.Done():
+			ticker.Stop()
 			o.logger.Info("Orchestrator worker: context cancelled")
 			return
 		case <-o.stopCh:
+			ticker.Stop()
 			o.logger.Info("Orchestrator worker: stop signal received")
 			return
 		case <-ticker.C:
+			ticker.Stop()
 			o.runCycle(ctx)
 		}
 	}
