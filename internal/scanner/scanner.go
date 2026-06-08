@@ -8,6 +8,8 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"math"
+	"net/http"
 	"slices"
 	"sync"
 	"time"
@@ -162,17 +164,64 @@ func (s *Scanner) ScanAllPairs(ctx context.Context, callback func(MarketData)) e
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
-				candles, err := s.FetchCandles(ctx, sym, intv, 100)
-				if err != nil {
-					s.logger.Warnf("Failed to fetch candles for %s %s: %v", sym, intv, err)
-					errCh <- err
+				// Retry loop dengan exponential backoff untuk rate limit (429)
+				var candles []models.MarketCandle
+				var ticker *models.MarketSnapshot
+				var lastErr error
+
+				for attempt := 0; attempt < 3; attempt++ {
+					if attempt > 0 {
+						// Exponential backoff: 1s, 2s, 4s
+						backoff := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+						s.logger.Infof("Retry %d/3 for %s %s after %v (rate limited)", attempt, sym, intv, backoff)
+						select {
+						case <-ctx.Done():
+							errCh <- ctx.Err()
+							return
+						case <-time.After(backoff):
+						}
+					}
+
+					candles, lastErr = s.FetchCandles(ctx, sym, intv, 100)
+					if lastErr == nil {
+						break
+					}
+					if !isRateLimitError(lastErr) {
+						s.logger.Warnf("Failed to fetch candles for %s %s: %v", sym, intv, lastErr)
+						errCh <- lastErr
+						return
+					}
+				}
+
+				if lastErr != nil {
+					errCh <- lastErr
 					return
 				}
 
-				ticker, err := s.FetchTicker(ctx, sym)
-				if err != nil {
-					s.logger.Warnf("Failed to fetch ticker for %s: %v", sym, err)
-					errCh <- err
+				for attempt := 0; attempt < 3; attempt++ {
+					if attempt > 0 {
+						backoff := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+						select {
+						case <-ctx.Done():
+							errCh <- ctx.Err()
+							return
+						case <-time.After(backoff):
+						}
+					}
+
+					ticker, lastErr = s.FetchTicker(ctx, sym)
+					if lastErr == nil {
+						break
+					}
+					if !isRateLimitError(lastErr) {
+						s.logger.Warnf("Failed to fetch ticker for %s: %v", sym, lastErr)
+						errCh <- lastErr
+						return
+					}
+				}
+
+				if lastErr != nil {
+					errCh <- lastErr
 					return
 				}
 
@@ -249,7 +298,36 @@ func (s *Scanner) GetSymbols() []string {
 	return symbols
 }
 
-// CalculateRSI calculates Relative Strength Index
+// isRateLimitError checks if an error is an HTTP 429 (Too Many Requests) rate limit error.
+// Nama Function: isRateLimitError
+// Deskripsi: Mengecek apakah error berasal dari rate limit HTTP 429.
+// Parameter/Value Input:
+//   - err: error — error yang akan dicek
+// Output/Return Value:
+//   - bool: true jika error adalah rate limit, false jika bukan
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check error message string for common rate limit indicators
+	errStr := err.Error()
+	return http.StatusText(http.StatusTooManyRequests) == errStr ||
+		contains(errStr, "429") ||
+		contains(errStr, "rate limit") ||
+		contains(errStr, "Rate limit") ||
+		contains(errStr, "too many requests")
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && func() bool {
+		for i := 0; i <= len(s)-len(substr); i++ {
+			if s[i:i+len(substr)] == substr {
+				return true
+			}
+		}
+		return false
+	}()
+}
 // Nama Function: CalculateRSI
 // Deskripsi: Menghitung RSI dari data candle.
 // Parameter/Value Input:

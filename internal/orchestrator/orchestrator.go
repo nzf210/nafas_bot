@@ -145,6 +145,9 @@ func (o *Orchestrator) worker(ctx context.Context) {
 
 	o.logger.Info("Orchestrator worker started")
 
+	// Jalankan cycle pertama kali agar bot tidak terlihat stuck menunggu interval
+	o.runCycle(ctx)
+
 	for {
 		// Baca interval dari config setiap iterasi agar perubahan .env langsung tercermin
 		interval := o.config.ScannerCycleInterval
@@ -194,11 +197,16 @@ func (o *Orchestrator) RunCycle(ctx context.Context) error {
 }
 
 func (o *Orchestrator) runCycle(ctx context.Context) error {
+	// Add timeout for the entire cycle to prevent stuck cycles
+	// 30 menit: cukup untuk scan 2000+ pairs + AI analysis semua user
+	cycleCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+
 	startTime := time.Now()
 	o.logger.Info("Starting trading cycle")
 
 	// Get all users with auto-trade enabled
-	users := o.GetActiveUsers(ctx)
+	users := o.GetActiveUsers(cycleCtx)
 	if len(users) == 0 {
 		o.logger.Info("No active users with auto-trade enabled, skipping cycle")
 		return nil
@@ -209,7 +217,7 @@ func (o *Orchestrator) runCycle(ctx context.Context) error {
 	o.syncUserPairsToScanner()
 
 	// Scan market data ONCE for all users
-	marketData := o.ScanMarket(ctx)
+	marketData := o.ScanMarket(cycleCtx)
 	if marketData == nil {
 		o.logger.Warn("Market scan failed, skipping cycle")
 		return fmt.Errorf("market scan failed")
@@ -228,7 +236,7 @@ func (o *Orchestrator) runCycle(ctx context.Context) error {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			if err := o.ProcessUser(ctx, u, marketData); err != nil {
+			if err := o.ProcessUser(cycleCtx, u, marketData); err != nil {
 				o.logger.WithError(err).WithField("user_id", u.ID).Warn("Failed to process user")
 				cycleErr = err
 			}
@@ -342,27 +350,25 @@ func (o *Orchestrator) GetActiveUsers(ctx context.Context) []models.User {
 // Output/Return Value:
 //   - map[string]*scanner.MarketData: map symbol ke market data
 func (o *Orchestrator) ScanMarket(ctx context.Context) map[string]*scanner.MarketData {
-	// Create a channel to receive market data
 	marketDataMap := make(map[string]*scanner.MarketData)
-	dataCh := make(chan scanner.MarketData, 100)
+	var mu sync.Mutex
 
 	// Create context with timeout for scan
-	scanCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	// Timeout 15 menit untuk handle 2000+ pairs × 3 intervals × 10 concurrency
+	// Kalkulasi: ~6000 HTTP calls / 10 concurrency ≈ 600 batches × ~150ms ≈ 90 detik ideal
+	// Dengan retry + rate limit, 15 menit masih aman
+	scanCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 
 	// Run scan with callback
 	err := o.scanner.ScanAllPairs(scanCtx, func(data scanner.MarketData) {
-		dataCh <- data
+		mu.Lock()
+		copied := data
+		marketDataMap[data.Symbol] = &copied
+		mu.Unlock()
 	})
 	if err != nil {
 		o.logger.WithError(err).Warn("Market scan error")
-	}
-
-	// Collect results
-	close(dataCh)
-	for data := range dataCh {
-		copied := data
-		marketDataMap[data.Symbol] = &copied
 	}
 
 	return marketDataMap
@@ -421,7 +427,12 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 		portfolioValue = decimal.NewFromFloat(0.1)
 	}
 
-	// Run AI analysis for each configured pair
+	// Run AI analysis for each configured pair concurrently
+	// Max 5 AI calls concurrently per user — menghindari rate limit AI endpoint
+	const maxConcurrentPairs = 5
+	semPair := make(chan struct{}, maxConcurrentPairs)
+	var wgPair sync.WaitGroup
+
 	for _, pair := range userCtx.Pairs {
 		data, ok := marketData[pair.Symbol]
 		if !ok {
@@ -429,180 +440,192 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			continue
 		}
 
-		userLogger.WithField("symbol", pair.Symbol).Info("Scanning pair for AI analysis")
+		wgPair.Add(1)
+		go func(p models.TradingPair) {
+			defer wgPair.Done()
+			semPair <- struct{}{}
+			defer func() { <-semPair }()
 
-		// Prepare market data for AI
-		marketDataMap := map[string]any{
-			"symbol":       data.Symbol,
-			"latest_price": data.LatestPrice.String(),
-			"volume_24h":   data.Volume24h.String(),
-			"interval":     data.Interval,
-		}
+			pairLogger := userLogger.WithField("symbol", p.Symbol)
+			pairLogger.Info("Scanning pair for AI analysis")
 
-		// ---------------------------------------------------------
-		// PRE-AI FILTERING
-		// ---------------------------------------------------------
-		// 1. Check 24h Volume
-		volumeFloat, _ := data.Volume24h.Float64()
-		if volumeFloat < o.config.MinVolume24h {
-			userLogger.WithField("symbol", pair.Symbol).
-				WithField("volume_usd", fmt.Sprintf("%.2f", volumeFloat)).
-				WithField("min_volume_usd", fmt.Sprintf("%.2f", o.config.MinVolume24h)).
-				Debug("Pair filtered: 24h volume below threshold")
-			continue
-		}
+			// Prepare market data for AI
+			marketDataMap := map[string]any{
+				"symbol":       data.Symbol,
+				"latest_price": data.LatestPrice.String(),
+				"volume_24h":   data.Volume24h.String(),
+				"interval":     data.Interval,
+			}
 
-		// 2. Check Volatility (Last 3 candles, e.g. 15m if interval is 5m)
-		passedFilter := false
-		if len(data.Candles) > 0 {
-			minLow := data.Candles[len(data.Candles)-1].Low
-			maxHigh := data.Candles[len(data.Candles)-1].High
+			// ---------------------------------------------------------
+			// PRE-AI FILTERING
+			// ---------------------------------------------------------
+			// 1. Check 24h Volume
+			volumeFloat, _ := data.Volume24h.Float64()
+			if volumeFloat < o.config.MinVolume24h {
+				pairLogger.WithField("volume_usd", fmt.Sprintf("%.2f", volumeFloat)).
+					WithField("min_volume_usd", fmt.Sprintf("%.2f", o.config.MinVolume24h)).
+					Debug("Pair filtered: 24h volume below threshold")
+				return
+			}
 
-			startIdx := max(0, len(data.Candles)-3)
+			// 2. Check Volatility (Last 3 candles)
+			passedFilter := false
+			if len(data.Candles) > 0 {
+				minLow := data.Candles[len(data.Candles)-1].Low
+				maxHigh := data.Candles[len(data.Candles)-1].High
 
-			for i := startIdx; i < len(data.Candles); i++ {
-				if data.Candles[i].Low.LessThan(minLow) {
-					minLow = data.Candles[i].Low
+				startIdx := max(0, len(data.Candles)-3)
+				for i := startIdx; i < len(data.Candles); i++ {
+					if data.Candles[i].Low.LessThan(minLow) {
+						minLow = data.Candles[i].Low
+					}
+					if data.Candles[i].High.GreaterThan(maxHigh) {
+						maxHigh = data.Candles[i].High
+					}
 				}
-				if data.Candles[i].High.GreaterThan(maxHigh) {
-					maxHigh = data.Candles[i].High
+
+				minLowFloat, _ := minLow.Float64()
+				maxHighFloat, _ := maxHigh.Float64()
+
+				if minLowFloat > 0 {
+					volatility := ((maxHighFloat - minLowFloat) / minLowFloat) * 100
+					if volatility < o.config.MinVolatilityPercent {
+						pairLogger.WithField("volatility_pct", fmt.Sprintf("%.4f", volatility)).
+							WithField("min_volatility_pct", fmt.Sprintf("%.4f", o.config.MinVolatilityPercent)).
+							Debug("Pair filtered: volatility below threshold")
+						return
+					}
+					passedFilter = true
 				}
 			}
 
-			minLowFloat, _ := minLow.Float64()
-			maxHighFloat, _ := maxHigh.Float64()
-
-			if minLowFloat > 0 {
-				volatility := ((maxHighFloat - minLowFloat) / minLowFloat) * 100
-				if volatility < o.config.MinVolatilityPercent {
-					userLogger.WithField("symbol", pair.Symbol).
-						WithField("volatility_pct", fmt.Sprintf("%.4f", volatility)).
-						WithField("min_volatility_pct", fmt.Sprintf("%.4f", o.config.MinVolatilityPercent)).
-						Debug("Pair filtered: volatility below threshold")
-					continue
-				}
-				passedFilter = true
+			if passedFilter {
+				pairLogger.WithField("volume_usd", fmt.Sprintf("%.2f", volumeFloat)).
+					Info("Pair passed scanner filters, sending to AI")
 			}
-		}
+			// ---------------------------------------------------------
 
-		if passedFilter {
-			userLogger.WithField("symbol", pair.Symbol).
-				WithField("volume_usd", fmt.Sprintf("%.2f", volumeFloat)).
-				Info("Pair passed scanner filters, sending to AI")
-		}
-		// ---------------------------------------------------------
+			pairLogger.Info("Pair passed scanner filtering, sending to AI for analysis")
 
-		userLogger.WithField("symbol", pair.Symbol).Info("Pair passed scanner filtering, sending to AI for analysis")
+			// Run AI analysis — ini bottleneck utama, dijalankan secara concurrent
+			decision, err := o.ai.Decide(ctx, p.Symbol, marketDataMap, "")
+			if err != nil {
+				pairLogger.WithError(err).Error("AI analysis failed")
+				return
+			}
 
-		// Run AI analysis using existing Decide method
-		decision, err := o.ai.Decide(ctx, pair.Symbol, marketDataMap, "")
-		if err != nil {
-			userLogger.WithError(err).WithField("symbol", pair.Symbol).Error("AI analysis failed")
-			continue
-		}
+			// Log AI decision
+			o.logAIDecision(ctx, &user, p.Symbol, decision)
 
-		// Log AI decision
-		o.logAIDecision(ctx, &user, pair.Symbol, decision)
+			pairLogger.WithField("decision", decision.TradeDecision).
+				WithField("confidence", decision.Confidence.String()).
+				Info("AI analysis completed")
 
-		userLogger.WithField("symbol", pair.Symbol).WithField("decision", decision.TradeDecision).WithField("confidence", decision.Confidence.String()).Info("AI analysis completed")
+			// Check Confidence Threshold
+			confidenceFloat, _ := decision.Confidence.Float64()
+			if confidenceFloat < o.config.MinConfidenceThreshold {
+				pairLogger.WithField("confidence", confidenceFloat).
+					WithField("threshold", o.config.MinConfidenceThreshold).
+					Info("Trade blocked: AI confidence too low")
+				return
+			}
 
-		// Check Confidence Threshold
-		confidenceFloat, _ := decision.Confidence.Float64()
-		if confidenceFloat < o.config.MinConfidenceThreshold {
-			userLogger.WithField("symbol", pair.Symbol).WithField("confidence", confidenceFloat).WithField("threshold", o.config.MinConfidenceThreshold).Info("Trade blocked: AI confidence too low")
-			continue
-		}
+			// Check if AI recommends trade
+			if decision.TradeDecision != "BUY" && decision.TradeDecision != "SELL" {
+				pairLogger.WithField("decision", decision.TradeDecision).
+					Info("Trade skipped: AI did not recommend buy/sell")
+				return
+			}
 
-		// Check if AI recommends trade
-		if decision.TradeDecision != "BUY" && decision.TradeDecision != "SELL" {
-			userLogger.WithField("symbol", pair.Symbol).WithField("decision", decision.TradeDecision).Info("Trade skipped: AI did not recommend buy/sell")
-			continue
-		}
+			pairLogger.Info("AI trade recommendation accepted, proceeding to Risk Guardian/Executor")
 
-		userLogger.WithField("symbol", pair.Symbol).Info("AI trade recommendation accepted, proceeding to Risk Guardian/Executor")
+			// Build order for risk check
+			order := &models.Order{
+				UserID:    user.ID,
+				Symbol:    p.Symbol,
+				Side:      decision.TradeDecision,
+				OrderType: "MARKET",
+			}
 
-		// Build order for risk check
-		order := &models.Order{
-			UserID:    user.ID,
-			Symbol:    pair.Symbol,
-			Side:      decision.TradeDecision,
-			OrderType: "MARKET",
-		}
+			// Risk check via Risk Guardian
+			guardian := risk.NewGuardian()
+			riskResult := guardian.CheckTrade(&user, userCtx.Config, order, 0, decimal.Zero)
 
-		// Risk check via Risk Guardian
-		guardian := risk.NewGuardian()
-		riskResult := guardian.CheckTrade(&user, userCtx.Config, order, 0, decimal.Zero)
+			riskMap := map[string]int{
+				"low":     1,
+				"medium":  2,
+				"high":    3,
+				"extreme": 4,
+			}
 
-		riskMap := map[string]int{
-			"low":     1,
-			"medium":  2,
-			"high":    3,
-			"extreme": 4,
-		}
+			maxAllowedRiskIdx := riskMap[o.config.MaxRiskLevel]
+			if maxAllowedRiskIdx == 0 {
+				maxAllowedRiskIdx = 2 // default medium
+			}
 
-		maxAllowedRiskIdx := riskMap[o.config.MaxRiskLevel]
-		if maxAllowedRiskIdx == 0 {
-			maxAllowedRiskIdx = 2 // default medium
-		}
+			currentRiskIdx := riskMap[string(riskResult.RiskLevel)]
 
-		currentRiskIdx := riskMap[string(riskResult.RiskLevel)]
+			if !riskResult.Approved || currentRiskIdx > maxAllowedRiskIdx {
+				pairLogger.WithField("risk_level", riskResult.RiskLevel).
+					WithField("max_allowed", o.config.MaxRiskLevel).
+					Info("Trade blocked by Risk Guardian or Max Risk Level exceeded")
+				return
+			}
 
-		if !riskResult.Approved || currentRiskIdx > maxAllowedRiskIdx {
-			userLogger.WithField("symbol", pair.Symbol).WithField("risk_level", riskResult.RiskLevel).WithField("max_allowed", o.config.MaxRiskLevel).Info("Trade blocked by Risk Guardian or Max Risk Level exceeded")
-			continue
-		}
+			// Calculate position size using risk parameters
+			stopLossPercent := decimal.NewFromFloat(2.0) // default 2%
+			if len(decision.ExecutionPlan.TakeProfitLevels) > 0 {
+				stopLossPercent = decimal.NewFromFloat(decision.ExecutionPlan.TakeProfitLevels[0].TargetPercent)
+			}
 
-		// Calculate position size using risk parameters
-		stopLossPercent := decimal.NewFromFloat(2.0) // default 2%
-		if len(decision.ExecutionPlan.TakeProfitLevels) > 0 {
-			stopLossPercent = decimal.NewFromFloat(decision.ExecutionPlan.TakeProfitLevels[0].TargetPercent)
-		}
+			positionSizeQuote := guardian.CalculatePositionSize(
+				portfolioValue, // BTC balance
+				userCtx.Config.MaxRiskPerTrade,
+				stopLossPercent,
+			)
 
-		positionSizeQuote := guardian.CalculatePositionSize(
-			portfolioValue, // BTC balance
-			userCtx.Config.MaxRiskPerTrade,
-			stopLossPercent,
-		)
+			// Cap by MaxAllocationPerTrade
+			maxAllocation := portfolioValue.Mul(userCtx.Config.MaxAllocationPerTrade).Div(decimal.NewFromFloat(100))
+			if positionSizeQuote.GreaterThan(maxAllocation) {
+				positionSizeQuote = maxAllocation
+				pairLogger.WithField("capped_at", maxAllocation).Debug("Position size capped by MaxAllocationPerTrade")
+			}
 
-		// Cap by MaxAllocationPerTrade
-		maxAllocation := portfolioValue.Mul(userCtx.Config.MaxAllocationPerTrade).Div(decimal.NewFromFloat(100))
-		if positionSizeQuote.GreaterThan(maxAllocation) {
-			positionSizeQuote = maxAllocation
-			userLogger.WithField("symbol", pair.Symbol).WithField("capped_at", maxAllocation).Debug("Position size capped by MaxAllocationPerTrade")
-		}
+			if positionSizeQuote.LessThanOrEqual(decimal.Zero) {
+				pairLogger.Debug("Position size too small, skipping")
+				return
+			}
 
-		if positionSizeQuote.LessThanOrEqual(decimal.Zero) {
-			userLogger.WithField("symbol", pair.Symbol).Debug("Position size too small, skipping")
-			continue
-		}
+			// Convert Quote Asset (BTC) position size to Base Asset quantity
+			if data.LatestPrice.LessThanOrEqual(decimal.Zero) {
+				pairLogger.Warn("Latest price is invalid, skipping")
+				return
+			}
 
-		// Convert Quote Asset (BTC) position size to Base Asset quantity
-		if data.LatestPrice.LessThanOrEqual(decimal.Zero) {
-			userLogger.WithField("symbol", pair.Symbol).Warn("Latest price is invalid, skipping")
-			continue
-		}
+			positionSizeBase := positionSizeQuote.Div(data.LatestPrice)
 
-		positionSizeBase := positionSizeQuote.Div(data.LatestPrice)
+			// Execute trade
+			plan := execution.ExecutionPlan{
+				Symbol:      p.Symbol,
+				Side:        decision.TradeDecision,
+				Quantity:    positionSizeBase,
+				StopLoss:    decision.ExecutionPlan.StopLoss,
+				MaxSlippage: decimal.NewFromFloat(0.005), // 0.5% max slippage
+			}
 
-		// Execute trade
-		plan := execution.ExecutionPlan{
-			Symbol:      pair.Symbol,
-			Side:        decision.TradeDecision,
-			Quantity:    positionSizeBase,
-			StopLoss:    decision.ExecutionPlan.StopLoss,
-			MaxSlippage: decimal.NewFromFloat(0.005), // 0.5% max slippage
-		}
+			executor := execution.NewExecutor(o.db, o.exchange)
+			result, err := executor.ExecuteMarket(ctx, user.ID, plan, userCtx.APIKey, userCtx.APISecret)
+			if err != nil {
+				pairLogger.WithError(err).Error("Trade execution failed")
+				return
+			}
 
-		executor := execution.NewExecutor(o.db, o.exchange)
-		result, err := executor.ExecuteMarket(ctx, user.ID, plan, userCtx.APIKey, userCtx.APISecret)
-		if err != nil {
-			userLogger.WithError(err).WithField("symbol", pair.Symbol).Error("Trade execution failed")
-			continue
-		}
-
-		userLogger.WithField("symbol", pair.Symbol).Infof("Trade executed: %s %s @ %s",
-			decision.TradeDecision, positionSizeBase.String(), result.ExecutionPrice.String())
+			pairLogger.Infof("Trade executed: %s %s @ %s",
+				decision.TradeDecision, positionSizeBase.String(), result.ExecutionPrice.String())
+		}(pair)
 	}
+	wgPair.Wait()
 
 	return nil
 }
