@@ -32,6 +32,12 @@ const (
 	MaxConcurrentUsers = 5
 )
 
+// decisionCacheEntry stores AI decision with TTL
+type decisionCacheEntry struct {
+	decision *ai.CoordinatorDecision
+	expireAt time.Time
+}
+
 // Orchestrator coordinates trading across multiple user accounts.
 // Runs market scan once, then executes for each user with auto-trade enabled.
 // Uses worker pool pattern to limit concurrent user processing.
@@ -66,6 +72,10 @@ type Orchestrator struct {
 	wg          sync.WaitGroup
 	config      *config.Config
 	pairManager *scanner.PairManager
+
+	// AI decision cache — 1 LLM call per unique symbol (bukan per user)
+	decisionCache    map[string]*decisionCacheEntry
+	decisionCacheMu sync.RWMutex
 }
 
 // NewOrchestrator creates a new multi-account orchestrator
@@ -224,6 +234,10 @@ func (o *Orchestrator) runCycle(ctx context.Context) error {
 	}
 	o.logger.Infof("Market scan completed: %d symbols", len(marketData))
 
+	// Pre-compute AI decisions ONCE per unique symbol (minimize token usage)
+	// AI decisions di-cache dan reuse untuk semua user
+	o.preComputeAIDecisions(cycleCtx, marketData)
+
 	// Process each user with worker pool
 	sem := make(chan struct{}, MaxConcurrentUsers)
 	var wg sync.WaitGroup
@@ -374,6 +388,144 @@ func (o *Orchestrator) ScanMarket(ctx context.Context) map[string]*scanner.Marke
 	return marketDataMap
 }
 
+// preComputeAIDecisions pre-computes AI decisions for all unique symbols ONCE.
+// Ini mencegah duplicate LLM calls — cukup 1 call per symbol untuk semua user.
+// Menggunakan worker pool untuk concurrent AI calls (max 5 concurrent).
+// Nama Function: preComputeAIDecisions
+// Deskripsi: Pre-compute AI decisions untuk semua unique symbols.
+//
+//	Menggunakan worker pool pattern untuk concurrent AI calls.
+//	Hasil di-cache dan reuse untuk semua user.
+//
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk HTTP request
+//   - marketData: map[string]*scanner.MarketData — market data hasil scan
+//
+// Function yang Dipanggil/Dikonsumsi:
+//   - ai.Decide: dipanggil untuk setiap symbol yang lolos pre-AI filter
+//
+// Output/Return Value:
+//   - Tidak ada return value langsung, hasil di-cache di o.decisionCache
+func (o *Orchestrator) preComputeAIDecisions(ctx context.Context, marketData map[string]*scanner.MarketData) {
+	// Clear old cache entries (expired ones)
+	o.cleanDecisionCache()
+
+	// Collect unique symbols from market data
+	symbols := make([]string, 0, len(marketData))
+	for symbol := range marketData {
+		symbols = append(symbols, symbol)
+	}
+
+	if len(symbols) == 0 {
+		return
+	}
+
+	o.logger.Infof("Pre-computing AI decisions for %d symbols (token optimization)", len(symbols))
+
+	// Worker pool: max 5 concurrent AI calls
+	const maxConcurrentAI = 5
+	sem := make(chan struct{}, maxConcurrentAI)
+	var wg sync.WaitGroup
+
+	for _, symbol := range symbols {
+		// Check cache first
+		o.decisionCacheMu.RLock()
+		_, exists := o.decisionCache[symbol]
+		o.decisionCacheMu.RUnlock()
+		if exists {
+			continue // Already computed this cycle
+		}
+
+		wg.Add(1)
+		go func(sym string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			data, ok := marketData[sym]
+			if !ok {
+				return
+			}
+
+			// PRE-AI FILTERING (moved from ProcessUser)
+			// 1. Volume check
+			volumeFloat, _ := data.Volume24h.Float64()
+			if volumeFloat < o.config.MinVolume24h {
+				o.logger.WithField("symbol", sym).Debug("Filtered: 24h volume below threshold")
+				return
+			}
+
+			// 2. Volatility check
+			if len(data.Candles) > 0 {
+				minLow := data.Candles[len(data.Candles)-1].Low
+				maxHigh := data.Candles[len(data.Candles)-1].High
+				startIdx := max(0, len(data.Candles)-3)
+				for i := startIdx; i < len(data.Candles); i++ {
+					if data.Candles[i].Low.LessThan(minLow) {
+						minLow = data.Candles[i].Low
+					}
+					if data.Candles[i].High.GreaterThan(maxHigh) {
+						maxHigh = data.Candles[i].High
+					}
+				}
+				minLowFloat, _ := minLow.Float64()
+				maxHighFloat, _ := maxHigh.Float64()
+				if minLowFloat > 0 {
+					volatility := ((maxHighFloat - minLowFloat) / minLowFloat) * 100
+					if volatility < o.config.MinVolatilityPercent {
+						o.logger.WithField("symbol", sym).Debug("Filtered: volatility below threshold")
+						return
+					}
+				}
+			}
+
+			// Build market data map for AI
+			marketDataMap := map[string]any{
+				"latest_price":    data.LatestPrice.String(),
+				"volume_24h":     data.Volume24h.String(),
+				"interval":       data.Interval,
+				"candles":        data.Candles,
+			}
+
+			// Call AI (cached for all users)
+			decision, err := o.ai.Decide(ctx, sym, marketDataMap, "")
+			if err != nil {
+				o.logger.WithError(err).WithField("symbol", sym).Warn("AI decision failed")
+				return
+			}
+
+			// Cache the decision (5 min TTL)
+			o.decisionCacheMu.Lock()
+			o.decisionCache[sym] = &decisionCacheEntry{
+				decision: decision,
+				expireAt: time.Now().Add(5 * time.Minute),
+			}
+			o.decisionCacheMu.Unlock()
+
+			o.logger.WithField("symbol", sym).
+				WithField("decision", decision.TradeDecision).
+				WithField("confidence", decision.Confidence.String()).
+				Info("AI decision cached")
+		}(symbol)
+	}
+
+	wg.Wait()
+	o.logger.Infof("AI decisions pre-computed: %d cached", len(o.decisionCache))
+}
+
+// cleanDecisionCache removes expired cache entries
+func (o *Orchestrator) cleanDecisionCache() {
+	o.decisionCacheMu.Lock()
+	defer o.decisionCacheMu.Unlock()
+
+	now := time.Now()
+	for symbol, entry := range o.decisionCache {
+		if now.After(entry.expireAt) {
+			delete(o.decisionCache, symbol)
+		}
+	}
+}
+
 // ProcessUser processes trading for a single user.
 // Gets user context, runs AI analysis, checks risk, executes if approved.
 // Nama Function: ProcessUser
@@ -449,71 +601,17 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			pairLogger := userLogger.WithField("symbol", p.Symbol)
 			pairLogger.Info("Scanning pair for AI analysis")
 
-			// Prepare market data for AI
-			marketDataMap := map[string]any{
-				"symbol":       data.Symbol,
-				"latest_price": data.LatestPrice.String(),
-				"volume_24h":   data.Volume24h.String(),
-				"interval":     data.Interval,
-			}
+			// Get cached AI decision (pre-computed in preComputeAIDecisions)
+			o.decisionCacheMu.RLock()
+			cached, exists := o.decisionCache[p.Symbol]
+			o.decisionCacheMu.RUnlock()
 
-			// ---------------------------------------------------------
-			// PRE-AI FILTERING
-			// ---------------------------------------------------------
-			// 1. Check 24h Volume
-			volumeFloat, _ := data.Volume24h.Float64()
-			if volumeFloat < o.config.MinVolume24h {
-				pairLogger.WithField("volume_usd", fmt.Sprintf("%.2f", volumeFloat)).
-					WithField("min_volume_usd", fmt.Sprintf("%.2f", o.config.MinVolume24h)).
-					Debug("Pair filtered: 24h volume below threshold")
+			if !exists {
+				pairLogger.Debug("No cached AI decision for symbol, skipping")
 				return
 			}
 
-			// 2. Check Volatility (Last 3 candles)
-			passedFilter := false
-			if len(data.Candles) > 0 {
-				minLow := data.Candles[len(data.Candles)-1].Low
-				maxHigh := data.Candles[len(data.Candles)-1].High
-
-				startIdx := max(0, len(data.Candles)-3)
-				for i := startIdx; i < len(data.Candles); i++ {
-					if data.Candles[i].Low.LessThan(minLow) {
-						minLow = data.Candles[i].Low
-					}
-					if data.Candles[i].High.GreaterThan(maxHigh) {
-						maxHigh = data.Candles[i].High
-					}
-				}
-
-				minLowFloat, _ := minLow.Float64()
-				maxHighFloat, _ := maxHigh.Float64()
-
-				if minLowFloat > 0 {
-					volatility := ((maxHighFloat - minLowFloat) / minLowFloat) * 100
-					if volatility < o.config.MinVolatilityPercent {
-						pairLogger.WithField("volatility_pct", fmt.Sprintf("%.4f", volatility)).
-							WithField("min_volatility_pct", fmt.Sprintf("%.4f", o.config.MinVolatilityPercent)).
-							Debug("Pair filtered: volatility below threshold")
-						return
-					}
-					passedFilter = true
-				}
-			}
-
-			if passedFilter {
-				pairLogger.WithField("volume_usd", fmt.Sprintf("%.2f", volumeFloat)).
-					Info("Pair passed scanner filters, sending to AI")
-			}
-			// ---------------------------------------------------------
-
-			pairLogger.Info("Pair passed scanner filtering, sending to AI for analysis")
-
-			// Run AI analysis — ini bottleneck utama, dijalankan secara concurrent
-			decision, err := o.ai.Decide(ctx, p.Symbol, marketDataMap, "")
-			if err != nil {
-				pairLogger.WithError(err).Error("AI analysis failed")
-				return
-			}
+			decision := cached.decision
 
 			// Log AI decision
 			o.logAIDecision(ctx, &user, p.Symbol, decision)
@@ -521,7 +619,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			pairLogger.WithField("decision", decision.TradeDecision).
 				WithField("confidence", decision.Confidence.String()).
 				WithField("reasoning", decision.MarketContext.OverallSentiment).
-				Info("AI analysis completed")
+				Info("Using cached AI decision")
 
 			// Check Confidence Threshold
 			confidenceFloat, _ := decision.Confidence.Float64()
@@ -643,10 +741,13 @@ func (o *Orchestrator) logAIDecision(ctx context.Context, user *models.User, sym
 	})
 	outputCtx, _ := json.Marshal(decision)
 
+	// Provider UUID untuk "Direct LLM" dari seed data ai_providers
+	providerID := models.ProviderIDDirectLLM
+
 	_, err := o.db.ExecContext(ctx, `
 		INSERT INTO ai_decisions (provider_id, symbol, decision, confidence, input_context, output_context)
 		VALUES ($1, $2, $3, $4, $5, $6)
-	`, models.UUID{}, symbol, decision.TradeDecision, decision.Confidence, inputCtx, outputCtx)
+	`, providerID, symbol, decision.TradeDecision, decision.Confidence, inputCtx, outputCtx)
 
 	if err != nil {
 		o.logger.WithError(err).Warn("Failed to log AI decision")

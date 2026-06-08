@@ -47,9 +47,9 @@ internal/
 
 **DO NOT start with microservices.** Choose simplicity, modular monolith, and observable system when unsure.
 
-### AI System: TradingAgents (Primary)
+### AI System: Direct LLM (Primary)
 
-AI backend menggunakan **TradingAgents** (Python/LangGraph) sebagai drop-in replacement untuk direct LLM calls. File `.md` agent prompts sudah deprecated.
+AI backend menggunakan **Direct LLM call** (Meridian-style) via OpenAI-compatible API. TradingAgents Python service sudah tidak digunakan.
 
 | Component | File | Fungsi |
 |-----------|------|--------|
@@ -64,7 +64,8 @@ AI backend menggunakan **TradingAgents** (Python/LangGraph) sebagai drop-in repl
 
 **Pipeline:**
 ```
-Market Data → Scanner → LLMClient.Decide() → Risk Guardian → Execution → Learning
+Market Scan → preComputeAIDecisions() → ProcessUser() → Risk Guardian → Execution → Learning
+                (1 call per symbol, cached 5 min)
 ```
 
 **AIClient Interface** (drop-in replacement pattern):
@@ -72,6 +73,43 @@ Market Data → Scanner → LLMClient.Decide() → Risk Guardian → Execution �
 - `HealthCheck(ctx)` → `bool`
 
 **Risk Guardian is the FINAL AUTHORITY.** It is hardcoded Go logic (not an AI prompt) that enforces max exposure, stop-loss requirements, and position sizing. AI prompts cannot override it.
+
+### AI Decision Cache (Token Minimization)
+
+Implementasi caching untuk meminimalkan token usage — cukup **1 LLM call per unique symbol** (bukan per user per cycle).
+
+**Arsitektur:**
+```go
+type decisionCacheEntry struct {
+    decision *ai.CoordinatorDecision
+    expireAt time.Time  // TTL 5 menit
+}
+
+type Orchestrator struct {
+    // ...
+    decisionCache    map[string]*decisionCacheEntry
+    decisionCacheMu sync.RWMutex
+}
+```
+
+**Flow:**
+1. `ScanMarket()` — scan market data ONCE untuk semua symbol
+2. `preComputeAIDecisions()` — pre-filter (volume + volatility) lalu call AI untuk setiap symbol yang lolos, cache hasilnya
+3. `ProcessUser()` — setiap user membaca dari cache, tidak perlu call AI lagi
+
+**Estimasi Penghematan:**
+- 100 users × BTCUSDT → **1 AI call** (bukan 100)
+- Cache TTL 5 menit → 12 calls/hour/symbol (bukan 12 × N users)
+- Pre-AI filter (volume + volatility) → skip coins yang tidak layak analisa sebelum AI dipanggil
+
+**AI Provider Seed Data:**
+Provider "Direct LLM" di-seed via migration dan auto-migrate:
+- ID: `00000000-0000-0000-0000-000000000001`
+- Model constant: `models.ProviderIDDirectLLM` (var UUID, bukan const)
+
+**Database:**
+- `ai_decisions.provider_id` → FK ke `ai_providers.id`
+- Seed data ada di `database/migrations/000004_full_schema.up.sql` dan auto-migrate di `cmd/api/main.go`
 
 ### WCH Token
 

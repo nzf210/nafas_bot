@@ -498,3 +498,10 @@ INSERT INTO strategies (name, description, parameters, enabled) VALUES
         "timeframes": ["1d"]
     }'::jsonb, true)
 ON CONFLICT DO NOTHING;
+
+-- ============================================================
+-- SEED DATA: AI Providers
+-- ============================================================
+INSERT INTO ai_providers (id, name, provider, model, is_active) VALUES
+    ('00000000-0000-0000-0000-000000000001', 'Direct LLM', 'openai', 'gpt-4o', true)
+ON CONFLICT DO NOTHING;

@@ -651,3 +651,16 @@ type DailyReport struct {
 
 // UUID type alias for database (using google/uuid)
 type UUID = uuid.UUID
+
+// ProviderIDDirectLLM adalah UUID untuk provider "Direct LLM" (seed data).
+// Harus match dengan seed data di database migrations/000004_full_schema.up.sql
+var ProviderIDDirectLLM = MustParseUUID("00000000-0000-0000-0000-000000000001")
+
+// MustParseUUID parses a string UUID or panics
+func MustParseUUID(s string) UUID {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		panic("invalid UUID: " + s)
+	}
+	return id
+}

@@ -95,6 +95,8 @@ func main() {
 		{"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS report_interval VARCHAR(20) DEFAULT '24h';", "add report_interval column to user_configs", false},
 		{"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS last_report_sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;", "add last_report_sent_at column to user_configs", false},
 		{"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS max_allocation_per_trade DECIMAL(18,8) DEFAULT 10.00;", "add max_allocation_per_trade column to user_configs", false},
+		// Seed AI provider "Direct LLM" jika belum ada
+		{`INSERT INTO ai_providers (id, name, provider, model, is_active) VALUES ('00000000-0000-0000-0000-000000000001', 'Direct LLM', 'openai', 'gpt-4o', true) ON CONFLICT DO NOTHING;`, "seed ai_providers (Direct LLM)", false},
 	}
 	for _, m := range autoMigrateQueries {
 		if _, err := db.Exec(m.sql); err != nil {
