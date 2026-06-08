@@ -389,16 +389,19 @@ type Chat struct {
 //   - ID: string — callback query ID
 //   - From: User — user yang menekan button
 //   - Data: string — callback data
+//   - Message: *Message — message yang berisi tombol (untuk EditMessageText)
 //
 // Function yang Dipanggil/Dikonsumsi:
 //   - AnswerCallbackQuery: dipanggil untuk answer callback
+//   - EditMessageText: dipanggil untuk edit pesan yang mengandung tombol
 //
 // Output/Return Value:
 //   - CallbackQuery: struct callback
 type CallbackQuery struct {
-	ID   string `json:"id"`
-	From User   `json:"from"`
-	Data string `json:"data"`
+	ID      string   `json:"id"`
+	From    User     `json:"from"`
+	Data    string   `json:"data"`
+	Message *Message `json:"message,omitempty"`
 }
 
 // HandleUpdate enqueues an incoming update untuk diproses secara asynchronous.
@@ -559,8 +562,57 @@ func (b *Bot) SendMessage(chatID int64, text string, replyMarkup interface{}) er
 	return nil
 }
 
+// EditMessageText mengedit pesan yang sudah terkirim.
+// Ini lebih baik daripada SendMessage yang membuat pesan baru terus-terusan.
+// Nama Function: EditMessageText
+// Deskripsi: Mengedit pesan yang sudah terkirim dengan message_id dan chat_id.
+// Parameter/Value Input:
+//   - chatID: int64 — chat ID
+//   - messageID: int64 — message ID yang akan diedit
+//   - text: string — teks baru
+//   - replyMarkup: interface{} — inline keyboard baru (opsional, bisa nil)
+//
+// Function yang Dipanggil/Dikonsumsi:
+//   - httpClient.Do: dipanggil untuk kirim request ke Telegram API
+//   - json.Marshal: dipanggil untuk serialize request body
+//
+// Output/Return Value:
+//   - error: error jika edit gagal
+func (b *Bot) EditMessageText(chatID int64, messageID int64, text string, replyMarkup interface{}) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/editMessageText", b.token)
+
+	body := map[string]interface{}{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"text":       text,
+		"parse_mode": "Markdown",
+	}
+	if replyMarkup != nil {
+		body["reply_markup"] = replyMarkup
+	}
+	bodyJSON, _ := json.Marshal(body)
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyJSON))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram API error: %s", string(respBody))
+	}
+
+	return nil
+}
+
 // SetWebhook sets the webhook URL
-// Nama Function: SetWebhook
 // Deskripsi: Mengatur webhook URL untuk bot.
 // Parameter/Value Input:
 //   - url: string — webhook URL
@@ -1870,10 +1922,12 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, user *models.User, cbq *C
 	switch {
 	case data == "settings_refresh":
 		b.logger.Debugf("handleCallbackQuery: settings_refresh callback for userID=%s", user.ID.String())
-		b.SendMessage(int64(cbq.From.ID), "🔄 Refreshing settings...", nil)
-		// Re-call handleSettings
 		response, markup, _ := b.handleSettings(ctx, user, "")
-		b.SendMessage(int64(cbq.From.ID), response, markup)
+		if cbq.Message != nil {
+			b.EditMessageText(int64(cbq.From.ID), cbq.Message.MessageID, response, markup)
+		} else {
+			b.SendMessage(int64(cbq.From.ID), response, markup)
+		}
 
 	case data == "settings_risk":
 		b.SendMessage(int64(cbq.From.ID), `📊 *Ubah Max Risk/Trade*
@@ -1924,12 +1978,10 @@ Contoh: /setallocation 25`, nil)
 			err := b.db.QueryRowContext(ctx, `
 				SELECT COALESCE(notify_on_trade, true) FROM user_configs WHERE user_id = $1
 			`, user.ID.String()).Scan(&current)
-			// If no row exists, current stays as default true
 			if err != nil && err != sql.ErrNoRows {
 				b.logger.Errorf("handleCallbackQuery: settings_tradealerts failed to read, userID=%s, err=%v", user.ID.String(), err)
 			}
 			newValue := !current
-			b.logger.Debugf("handleCallbackQuery: settings_tradealerts toggle current=%v -> newValue=%v", current, newValue)
 			_, err = b.db.ExecContext(ctx, `
 				INSERT INTO user_configs (user_id, notify_on_trade)
 				VALUES ($1, $2)
@@ -1939,20 +1991,14 @@ Contoh: /setallocation 25`, nil)
 			`, user.ID.String(), newValue)
 			if err != nil {
 				b.logger.Errorf("handleCallbackQuery: settings_tradealerts failed to save, userID=%s, err=%v", user.ID.String(), err)
-			} else {
-				b.logger.Infof("handleCallbackQuery: settings_tradealerts saved, userID=%s, newValue=%v", user.ID.String(), newValue)
 			}
-			if err == nil {
-				status := "❌ Off"
-				if newValue {
-					status = "✅ On"
-				}
-				b.SendMessage(int64(cbq.From.ID), fmt.Sprintf("🔔 Trade Alerts设置为: %s", status), nil)
+			response, markup, _ := b.handleSettings(ctx, user, "")
+			if cbq.Message != nil {
+				b.EditMessageText(int64(cbq.From.ID), cbq.Message.MessageID, response, markup)
+			} else {
+				b.SendMessage(int64(cbq.From.ID), response, markup)
 			}
 		}
-		// Refresh settings display
-		response, markup, _ := b.handleSettings(ctx, user, "")
-		b.SendMessage(int64(cbq.From.ID), response, markup)
 
 	case data == "settings_erroralerts":
 		b.logger.Debugf("handleCallbackQuery: settings_erroralerts toggle for userID=%s", user.ID.String())
@@ -1961,12 +2007,10 @@ Contoh: /setallocation 25`, nil)
 			err := b.db.QueryRowContext(ctx, `
 				SELECT COALESCE(notify_on_error, true) FROM user_configs WHERE user_id = $1
 			`, user.ID.String()).Scan(&current)
-			// If no row exists, current stays as default true
 			if err != nil && err != sql.ErrNoRows {
 				b.logger.Errorf("handleCallbackQuery: settings_erroralerts failed to read, userID=%s, err=%v", user.ID.String(), err)
 			}
 			newValue := !current
-			b.logger.Debugf("handleCallbackQuery: settings_erroralerts toggle current=%v -> newValue=%v", current, newValue)
 			_, err = b.db.ExecContext(ctx, `
 				INSERT INTO user_configs (user_id, notify_on_error)
 				VALUES ($1, $2)
@@ -1976,20 +2020,14 @@ Contoh: /setallocation 25`, nil)
 			`, user.ID.String(), newValue)
 			if err != nil {
 				b.logger.Errorf("handleCallbackQuery: settings_erroralerts failed to save, userID=%s, err=%v", user.ID.String(), err)
-			} else {
-				b.logger.Infof("handleCallbackQuery: settings_erroralerts saved, userID=%s, newValue=%v", user.ID.String(), newValue)
 			}
-			if err == nil {
-				status := "❌ Off"
-				if newValue {
-					status = "✅ On"
-				}
-				b.SendMessage(int64(cbq.From.ID), fmt.Sprintf("⚠️ Error Alerts设置为: %s", status), nil)
+			response, markup, _ := b.handleSettings(ctx, user, "")
+			if cbq.Message != nil {
+				b.EditMessageText(int64(cbq.From.ID), cbq.Message.MessageID, response, markup)
+			} else {
+				b.SendMessage(int64(cbq.From.ID), response, markup)
 			}
 		}
-		// Refresh settings display
-		response, markup, _ := b.handleSettings(ctx, user, "")
-		b.SendMessage(int64(cbq.From.ID), response, markup)
 
 	case data == "settings_autotrade":
 		b.logger.Debugf("handleCallbackQuery: settings_autotrade toggle for userID=%s", user.ID.String())
@@ -1998,12 +2036,10 @@ Contoh: /setallocation 25`, nil)
 			err := b.db.QueryRowContext(ctx, `
 				SELECT COALESCE(auto_trade_enabled, false) FROM user_configs WHERE user_id = $1
 			`, user.ID.String()).Scan(&current)
-			// If no row exists, current stays as default false
 			if err != nil && err != sql.ErrNoRows {
 				b.logger.Errorf("handleCallbackQuery: settings_autotrade failed to read, userID=%s, err=%v", user.ID.String(), err)
 			}
 			newValue := !current
-			b.logger.Debugf("handleCallbackQuery: settings_autotrade toggle current=%v -> newValue=%v", current, newValue)
 			_, err = b.db.ExecContext(ctx, `
 				INSERT INTO user_configs (user_id, auto_trade_enabled)
 				VALUES ($1, $2)
@@ -2013,20 +2049,14 @@ Contoh: /setallocation 25`, nil)
 			`, user.ID.String(), newValue)
 			if err != nil {
 				b.logger.Errorf("handleCallbackQuery: settings_autotrade failed to save, userID=%s, err=%v", user.ID.String(), err)
-			} else {
-				b.logger.Infof("handleCallbackQuery: settings_autotrade saved, userID=%s, newValue=%v", user.ID.String(), newValue)
 			}
-			if err == nil {
-				status := "❌ Disabled"
-				if newValue {
-					status = "✅ Enabled"
-				}
-				b.SendMessage(int64(cbq.From.ID), fmt.Sprintf("🤖 Auto Trade设置为: %s", status), nil)
+			response, markup, _ := b.handleSettings(ctx, user, "")
+			if cbq.Message != nil {
+				b.EditMessageText(int64(cbq.From.ID), cbq.Message.MessageID, response, markup)
+			} else {
+				b.SendMessage(int64(cbq.From.ID), response, markup)
 			}
 		}
-		// Refresh settings display
-		response, markup, _ := b.handleSettings(ctx, user, "")
-		b.SendMessage(int64(cbq.From.ID), response, markup)
 
 	case data == "apikey_binance":
 		b.SendMessage(int64(cbq.From.ID), `🔶 *Binance API Key Setup*
