@@ -142,14 +142,20 @@ func main() {
 	
 	logg.Info("Market scanner and PairManager initialized")
 
-	// Initialize AI Coordinator (TradingAgents)
-	taClient := ai.NewTradingAgentsClient(
-		cfg.TradingAgentsURL,
+	// Initialize AI Coordinator (Direct LLM - Meridian-style)
+	// Use LLMBaseURL if set, otherwise fall back to LLMProviderURL
+	llmBaseURL := cfg.LLMBaseURL
+	if llmBaseURL == "" {
+		llmBaseURL = cfg.LLMProviderURL
+	}
+	taClient := ai.NewLLMClient(
+		llmBaseURL,
 		cfg.LLMAPIKey,
 		cfg.LLMModel,
-		cfg.LLMBaseURL,
+		0.3,  // temperature
+		1024, // max tokens
 	)
-	logg.Info("TradingAgents AI client initialized")
+	logg.Info("Direct LLM AI client initialized")
 
 	// Initialize Executor
 	_ = execution.NewExecutor(db, binanceClient)
@@ -157,7 +163,7 @@ func main() {
 
 	// Initialize Multi-Account Orchestrator
 	var tradingOrchestrator *orchestrator.Orchestrator
-	if cfg.TradingAgentsURL != "" {
+	if cfg.LLMAPIKey != "" || cfg.LLMBaseURL != "" {
 		strategyEngine := strategy.NewStrategyEngine(db)
 		tradingOrchestrator = orchestrator.NewOrchestrator(db, binanceClient, marketScanner, taClient, strategyEngine, cfg, pairManager)
 		tradingOrchestrator.Start(context.Background())

@@ -53,34 +53,25 @@ AI backend menggunakan **TradingAgents** (Python/LangGraph) sebagai drop-in repl
 
 | Component | File | Fungsi |
 |-----------|------|--------|
-| TradingAgents Service | `services/trading_engine/` | Python FastAPI - multi-agent trading analysis |
-| Go Client | `internal/ai/tradingagents.go` | Client untuk TradingAgents API |
-| Decide() | `tradingagents.go` | Drop-in replacement untuk Coordinator.Decide() |
+| LLM Client | `internal/ai/llm.go` | Direct LLM call — Meridian-style (no separate service) |
+| AI Client | `internal/ai/llm.go` | `AIClient` interface for decision making |
 
-**TradingAgents Flow:**
+**Prinsip LLM (diadopsi dari Meridian):**
+- Direct LLM call via OpenAI-compatible API (tanpa service terpisah)
+- Support OpenRouter, Ollama, LM Studio via custom base URL
+- Provider fallback + retry logic (502/503/529 → retry 3x)
+- Single-shot prompt (bukan ReAct loop — scanner sudah supply data)
+
+**Pipeline:**
 ```
-NAFAS (Go) → TradingAgentsClient → TradingAgents API → Multi-Agent Analysis (LangGraph)
-                                                                    ↓
-                                                              Trading Decision
-                                                                    ↓
-NAFAS Executor ← Risk Guardian ← CoordinatorDecision format
+Market Data → Scanner → LLMClient.Decide() → Risk Guardian → Execution → Learning
 ```
+
+**AIClient Interface** (drop-in replacement pattern):
+- `Decide(ctx, symbol, marketData)` → `*CoordinatorDecision`
+- `HealthCheck(ctx)` → `bool`
 
 **Risk Guardian is the FINAL AUTHORITY.** It is hardcoded Go logic (not an AI prompt) that enforces max exposure, stop-loss requirements, and position sizing. AI prompts cannot override it.
-
-### Trading Pipeline (TradingAgents)
-
-```
-Market Data → Scanner → TradingAgentsClient.Decide() → Risk Guardian → Execution → Learning
-```
-
-TradingAgents orchestrates: Market analysis → Trading decision → Risk validation → Order execution. CoordinatorDecision format ensures compatibility with existing orchestrator.
-
-```
-Market Data → Scanner → Pair Ranking → AI Review → Risk Engine → Execution → Learning
-```
-
-The AI Coordinator orchestrates the flow: Market Analyst detects regime → Pair Analyst ranks pairs → AI Coordinator produces structured decision → Risk Guardian approves/rejects/scales → Execution Advisor defines order parameters → Trade Reviewer validates → Execution module sends orders.
 
 ### WCH Token
 

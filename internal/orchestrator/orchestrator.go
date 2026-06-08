@@ -44,7 +44,7 @@ const (
 //   - db: *sql.DB — koneksi database
 //   - exchange: exchange.Exchange — exchange client
 //   - scanner: *scanner.Scanner — market scanner
-//   - ai: *ai.TradingAgentsClient — TradingAgents AI client
+//   - ai: ai.AIClient — AI decision client (LLM atau TradingAgents)
 //   - engine: *strategy.StrategyEngine — strategy engine
 //   - logger: *logger.Logger — logger instance
 //
@@ -59,7 +59,7 @@ type Orchestrator struct {
 	db          *sql.DB
 	exchange    exchange.Exchange
 	scanner     *scanner.Scanner
-	ai          *ai.TradingAgentsClient
+	ai          ai.AIClient
 	engine      *strategy.StrategyEngine
 	logger      *logger.Logger
 	stopCh      chan struct{}
@@ -75,7 +75,7 @@ type Orchestrator struct {
 //   - db: *sql.DB — koneksi database
 //   - exch: exchange.Exchange — exchange client
 //   - scan: *scanner.Scanner — market scanner
-//   - taClient: *ai.TradingAgentsClient — TradingAgents AI client
+//   - taClient: ai.AIClient — AI decision client
 //   - eng: *strategy.StrategyEngine — strategy engine
 //   - cfg: *config.Config — application configuration
 //   - pm: *scanner.PairManager — pair manager untuk sync user pairs ke scanner
@@ -85,7 +85,7 @@ type Orchestrator struct {
 //
 // Output/Return Value:
 //   - *Orchestrator: pointer ke orchestrator instance
-func NewOrchestrator(db *sql.DB, exch exchange.Exchange, scan *scanner.Scanner, taClient *ai.TradingAgentsClient, eng *strategy.StrategyEngine, cfg *config.Config, pm *scanner.PairManager) *Orchestrator {
+func NewOrchestrator(db *sql.DB, exch exchange.Exchange, scan *scanner.Scanner, taClient ai.AIClient, eng *strategy.StrategyEngine, cfg *config.Config, pm *scanner.PairManager) *Orchestrator {
 	return &Orchestrator{
 		db:          db,
 		exchange:    exch,
