@@ -132,7 +132,7 @@ async def analyze_ticker(request: AnalyzeRequest):
             take_profit_targets=decision.get("take_profit_targets", []),
         )
 
-        logger.info(f"Analysis complete: {response.action} (confidence: {response.confidence}%)")
+        logger.info(f"Analysis complete: {response.action} (confidence: {response.confidence}%) - Reasoning: {response.reasoning}")
         return response
 
     except Exception as e:

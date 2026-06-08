@@ -520,6 +520,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 
 			pairLogger.WithField("decision", decision.TradeDecision).
 				WithField("confidence", decision.Confidence.String()).
+				WithField("reasoning", decision.MarketContext.OverallSentiment).
 				Info("AI analysis completed")
 
 			// Check Confidence Threshold
