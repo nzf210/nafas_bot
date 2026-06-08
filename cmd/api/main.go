@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	"github.com/nzf210/nafas-bot/internal/ai"
 	"github.com/nzf210/nafas-bot/internal/auth"
 	"github.com/nzf210/nafas-bot/internal/config"
@@ -52,6 +54,9 @@ import (
 // Output/Return Value:
 //   - Tidak ada return value langsung, aplikasi exit dengan code 0 atau 1
 func main() {
+	// Load .env file if present (silent if not found)
+	_ = godotenv.Load()
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
