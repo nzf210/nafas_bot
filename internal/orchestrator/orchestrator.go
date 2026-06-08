@@ -106,6 +106,7 @@ func NewOrchestrator(db *sql.DB, exch exchange.Exchange, scan *scanner.Scanner, 
 		stopCh:      make(chan struct{}),
 		config:      cfg,
 		pairManager: pm,
+		decisionCache: make(map[string]*decisionCacheEntry),
 	}
 }
 
