@@ -368,9 +368,17 @@ func (c *TradingAgentsClient) convertToCoordinatorDecision(symbol string, taResp
 // convertSymbolToTradingAgents converts Binance symbol format to TradingAgents format
 // BTCUSDT -> BTC-USD, ETHUSDT -> ETH-USD
 func convertSymbolToTradingAgents(symbol string) string {
-	// Remove USDT suffix and add -USD suffix
 	if len(symbol) > 4 && symbol[len(symbol)-4:] == "USDT" {
 		return symbol[:len(symbol)-4] + "-USD"
+	}
+	if len(symbol) > 3 && symbol[len(symbol)-3:] == "BTC" {
+		return symbol[:len(symbol)-3] + "-BTC"
+	}
+	if len(symbol) > 3 && symbol[len(symbol)-3:] == "ETH" {
+		return symbol[:len(symbol)-3] + "-ETH"
+	}
+	if len(symbol) > 3 && symbol[len(symbol)-3:] == "BNB" {
+		return symbol[:len(symbol)-3] + "-BNB"
 	}
 	return symbol
 }
