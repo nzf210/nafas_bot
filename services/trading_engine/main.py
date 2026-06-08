@@ -57,7 +57,8 @@ def get_ta_instance():
 
     if ta_instance is None:
         try:
-            from tradingagents import TradingAgentsConfig, TradingAgentsGraph, set_config
+            from tradingagents.graph.trading_graph import TradingAgentsGraph
+            from tradingagents.default_config import DEFAULT_CONFIG
 
             # Get LLM config from environment
             llm_base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
@@ -68,15 +69,14 @@ def get_ta_instance():
             os.environ["OPENAI_API_BASE"] = llm_base_url
             os.environ["OPENAI_API_KEY"] = llm_api_key
 
-            config = TradingAgentsConfig(
-                llm_provider="openai",
-                deep_think_llm=llm_model,
-                quick_think_llm=llm_model,
-                max_debate_rounds=3,
-                max_risk_discuss_rounds=3,
-                max_recur_limit=30,
-            )
-            set_config(config)
+            config = DEFAULT_CONFIG.copy()
+            config["llm_provider"] = "openai"
+            config["deep_think_llm"] = llm_model
+            config["quick_think_llm"] = llm_model
+            config["max_debate_rounds"] = 3
+            config["max_risk_discuss_rounds"] = 3
+            config["max_recur_limit"] = 30
+            config["backend_url"] = llm_base_url
 
             ta_instance = TradingAgentsGraph(config=config)
             logger.info(f"TradingAgents initialized with model: {llm_model}")
