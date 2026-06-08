@@ -23,13 +23,15 @@ services:
     ports:
       - "8889:8889"
     environment:
-      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
+      - LLM_BASE_URL=${LLM_BASE_URL:-${LLM_PROVIDER_URL:-https://api.openai.com/v1}}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-gpt-4o}
-      - OPENAI_API_BASE=${LLM_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_API_BASE=${LLM_BASE_URL:-${LLM_PROVIDER_URL:-https://api.openai.com/v1}}
       - OPENAI_API_KEY=${LLM_API_KEY}
     networks:
       - default
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8889/health"]
@@ -83,6 +85,8 @@ services:
     networks:
       - default
       - shared-db-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8988/health"]
