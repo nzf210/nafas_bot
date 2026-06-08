@@ -142,7 +142,7 @@ func NewTradingAgentsClient(baseURL, apiKey, model, llmBaseURL string) *TradingA
 		apiKey:     apiKey,
 		model:      model,
 		llmBaseURL: llmBaseURL,
-		httpClient: &http.Client{Timeout: 120 * time.Second}, // Timeout 2 min untuk multi-agent analysis
+		httpClient: &http.Client{Timeout: 10 * time.Minute}, // Timeout 10 min untuk multi-agent analysis via local LLM
 	}
 }
 
