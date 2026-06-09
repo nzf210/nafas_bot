@@ -43,9 +43,10 @@ func (c *BinanceClient) LoadSymbolFilters(ctx context.Context) error {
 			Symbol  string `json:"symbol"`
 			Filters []struct {
 				FilterType string `json:"filterType"`
-				StepSize   string `json:"stepSize"`
-				MinQty     string `json:"minQty"`
-				MaxQty     string `json:"maxQty"`
+				StepSize    string `json:"stepSize"`
+				MinQty      string `json:"minQty"`
+				MaxQty      string `json:"maxQty"`
+				MinNotional string `json:"minNotional"`
 			} `json:"filters"`
 		} `json:"symbols"`
 	}
@@ -55,21 +56,25 @@ func (c *BinanceClient) LoadSymbolFilters(ctx context.Context) error {
 
 	c.symbolFilters = make(map[string]SymbolFilter)
 	for _, s := range info.Symbols {
+		var filter SymbolFilter
 		for _, f := range s.Filters {
-			if f.FilterType == "LOT_SIZE" {
+			switch f.FilterType {
+			case "LOT_SIZE":
 				step, _ := decimal.NewFromString(f.StepSize)
 				minQty, _ := decimal.NewFromString(f.MinQty)
 				maxQty, _ := decimal.NewFromString(f.MaxQty)
-				c.symbolFilters[s.Symbol] = SymbolFilter{
-					StepSize: step,
-					MinQty:   minQty,
-					MaxQty:   maxQty,
-				}
+				filter.StepSize = step
+				filter.MinQty = minQty
+				filter.MaxQty = maxQty
+			case "NOTIONAL":
+				minNotional, _ := decimal.NewFromString(f.MinNotional)
+				filter.MinNotional = minNotional
 			}
 		}
+		c.symbolFilters[s.Symbol] = filter
 	}
 
-	c.logger.Infof("Loaded LOT_SIZE filters for %d symbols", len(c.symbolFilters))
+	c.logger.Infof("Loaded filters for %d symbols (LOT_SIZE + NOTIONAL)", len(c.symbolFilters))
 	return nil
 }
 
@@ -237,10 +242,19 @@ func (c *BinanceClient) GetBalances(ctx context.Context, apiKey, apiSecret strin
 //   - *models.Order: order dengan exchange_order_id populated
 //   - error: error jika order gagal
 
+// SymbolFilter represents trading rules for a symbol loaded from Binance exchange info
+// Nama Function: SymbolFilter
+// Deskripsi: Struct untuk menyimpan filter trading rules per symbol dari Binance.
+// Parameter/Value Input:
+//   - StepSize: decimal.Decimal — step size untuk quantity precision
+//   - MinQty: decimal.Decimal — minimum quantity yang diizinkan
+//   - MaxQty: decimal.Decimal — maximum quantity yang diizinkan
+//   - MinNotional: decimal.Decimal — minimum order value (quantity * price) dalam quote currency
 type SymbolFilter struct {
-	StepSize decimal.Decimal
-	MinQty   decimal.Decimal
-	MaxQty   decimal.Decimal
+	StepSize    decimal.Decimal
+	MinQty      decimal.Decimal
+	MaxQty      decimal.Decimal
+	MinNotional decimal.Decimal
 }
 
 func (c *BinanceClient) validatePrecision(symbol string, qty decimal.Decimal) error {
@@ -396,6 +410,24 @@ func (c *BinanceClient) fixQuantity(symbol string, qty decimal.Decimal) decimal.
 
 func (c *BinanceClient) getLotSize(symbol string) SymbolFilter {
 	return c.symbolFilters[symbol]
+}
+
+// GetMinNotional returns the minimum notional value for a symbol
+// Nama Function: GetMinNotional
+// Deskripsi: Mengambil minimum notional value (minimum order value) untuk sebuah symbol.
+// Parameter/Value Input:
+//   - symbol: string — symbol trading (contoh: BTCUSDT)
+//
+// Function yang Dipanggil/Dikonsumsi:
+//   - Tidak ada function langsung, hanya akses map
+//
+// Output/Return Value:
+//   - decimal.Decimal: minimum notional dalam quote currency (e.g., 5 USDT)
+func (c *BinanceClient) GetMinNotional(symbol string) decimal.Decimal {
+	if f, ok := c.symbolFilters[symbol]; ok {
+		return f.MinNotional
+	}
+	return decimal.Zero
 }
 
 // GetOrderStatus retrieves order status from Binance

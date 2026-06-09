@@ -854,6 +854,49 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 				pairLogger.Warn("Position size zero after LOT_SIZE rounding, skipping")
 				return
 			}
+
+			// ============================================================
+			// BALANCE SUFFICIENCY CHECK (Pre-execution validation)
+			// ============================================================
+			// Calculate position value in quote currency (BTC) before execution
+			positionValueQuote := positionSizeBase.Mul(data.LatestPrice)
+
+			// Get MIN_NOTIONAL for this symbol from exchange
+			var minNotional decimal.Decimal
+			type minNotionalGetter interface {
+				GetMinNotional(symbol string) decimal.Decimal
+			}
+			if getter, ok := o.exchange.(minNotionalGetter); ok {
+				minNotional = getter.GetMinNotional(p.Symbol)
+			}
+
+			// Check balance sufficiency
+			balanceCheck := CheckBalanceSufficiency(
+				portfolioValue,       // Available BTC balance
+				positionValueQuote,    // Position value in BTC
+				minNotional,           // MIN_NOTIONAL filter from Binance
+			)
+
+			if !balanceCheck.Sufficient {
+				pairLogger.WithFields(map[string]any{
+					"symbol":            p.Symbol,
+					"available_btc":     balanceCheck.Available.String(),
+					"required_btc":      balanceCheck.Required.String(),
+					"deficit_btc":       balanceCheck.Deficit.String(),
+					"min_notional_met":  balanceCheck.MinNotionalMet,
+					"reason":            balanceCheck.Reason,
+				}).Warn("BALANCE CHECK FAILED: Skipping order - insufficient balance or below min notional")
+				return
+			}
+
+			pairLogger.WithFields(map[string]any{
+				"symbol":           p.Symbol,
+				"available_btc":    balanceCheck.Available.String(),
+				"required_btc":     balanceCheck.Required.String(),
+				"min_notional":     minNotional.String(),
+				"min_notional_met": balanceCheck.MinNotionalMet,
+			}).Info("Balance sufficiency check passed")
+
 			// ────
 			// ============================================================
 			// SAFETY GUARD: Final check before execution
