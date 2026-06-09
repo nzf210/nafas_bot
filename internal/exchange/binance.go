@@ -70,9 +70,10 @@ func NewBinance() *BinanceClient {
 
 // BinanceClient Binance exchange implementation
 type BinanceClient struct {
-	baseURL    string
-	logger     *logger.Logger
-	httpClient *http.Client
+	baseURL       string
+	logger        *logger.Logger
+	httpClient    *http.Client
+	symbolFilters map[string]SymbolFilter
 }
 
 // BinanceTickerResponse represents Binance ticker API response
@@ -181,6 +182,13 @@ func (c *BinanceClient) GetBalances(ctx context.Context, apiKey, apiSecret strin
 // Output/Return Value:
 //   - *models.Order: order dengan exchange_order_id populated
 //   - error: error jika order gagal
+
+type SymbolFilter struct {
+	StepSize decimal.Decimal
+	MinQty   decimal.Decimal
+	MaxQty   decimal.Decimal
+}
+
 func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string, order models.Order) (*models.Order, error) {
 	timestamp := time.Now().UnixMilli()
 
@@ -274,7 +282,27 @@ func (c *BinanceClient) normalizeQuantity(
 	symbol string,
 	qty decimal.Decimal,
 ) decimal.Decimal {
-	return qty.Truncate(5)
+
+	f := c.getLotSize(symbol)
+
+	// kalau belum ada data exchangeInfo → fallback aman
+	if f.StepSize.IsZero() {
+		return qty
+	}
+
+	// FLOOR ke stepSize Binance
+	qty = qty.Div(f.StepSize).Floor().Mul(f.StepSize)
+
+	// safety guard
+	if qty.IsNegative() {
+		return decimal.Zero
+	}
+
+	return qty
+}
+
+func (c *BinanceClient) getLotSize(symbol string) SymbolFilter {
+	return c.symbolFilters[symbol]
 }
 
 // GetOrderStatus retrieves order status from Binance
