@@ -6,7 +6,7 @@
 package exchange
 
 import (
-	"bytes"
+	// "bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -29,12 +29,14 @@ import (
 // Deskripsi: Interface untuk semua implementasi exchange.
 // Parameter/Value Input:
 //   - Context dan parameter sesuai method masing-masing
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - GetName: mengambil nama exchange
 //   - GetBalances: mengambil semua balance
 //   - PlaceOrder: menempatkan order
 //   - GetOrderStatus: mengambil status order
 //   - GetCandles: mengambil data candle OHLCV
+//
 // Output/Return Value:
 //   - Interface dengan semua method exchange
 type Exchange interface {
@@ -52,12 +54,14 @@ type Exchange interface {
 // Deskripsi: Membuat instance Binance exchange client baru.
 // Parameter/Value Input:
 //   - Tidak ada parameter langsung, menggunakan endpoint tetap
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - Tidak ada function langsung, hanya inisialisasi
+//
 // Output/Return Value:
 //   - *BinanceClient: pointer ke Binance client
 func NewBinance() *BinanceClient {
-	return&BinanceClient{
+	return &BinanceClient{
 		baseURL:    "https://api.binance.com",
 		logger:     logger.Default().WithField("module", "exchange/binance"),
 		httpClient: &http.Client{Timeout: 30 * time.Second},
@@ -91,8 +95,10 @@ type BinanceBalanceResponse struct {
 // Deskripsi: Mengambil nama exchange.
 // Parameter/Value Input:
 //   - Tidak ada parameter
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - Tidak ada function langsung
+//
 // Output/Return Value:
 //   - string: nama exchange ("binance")
 func (c *BinanceClient) GetName() string {
@@ -106,10 +112,12 @@ func (c *BinanceClient) GetName() string {
 //   - ctx: context.Context — context untuk HTTP request
 //   - apiKey: string — API key dari user
 //   - apiSecret: string — API secret dari user (untuk signing)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - c.signRequest: dipanggil untuk sign request dengan HMAC
 //   - httpClient.Do: dipanggil untuk execute request ke Binance API
 //   - json.Unmarshal: dipanggil untuk parse response
+//
 // Output/Return Value:
 //   - map[string]decimal.Decimal: map asset ke balance
 //   - error: error jika request gagal
@@ -164,10 +172,12 @@ func (c *BinanceClient) GetBalances(ctx context.Context, apiKey, apiSecret strin
 //   - ctx: context.Context — context untuk HTTP request
 //   - apiKey, apiSecret: string — kredensial user
 //   - order: models.Order — detail order (symbol, side, quantity, price)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - c.signRequest: dipanggil untuk sign request
 //   - httpClient.Do: dipanggil untuk kirim order ke Binance
 //   - json.NewEncoder: dipanggil untuk encode body request
+//
 // Output/Return Value:
 //   - *models.Order: order dengan exchange_order_id populated
 //   - error: error jika order gagal
@@ -175,11 +185,11 @@ func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string
 	timestamp := time.Now().UnixMilli()
 
 	params := map[string]string{
-		"symbol":    order.Symbol,
-		"side":      order.Side,
-		"type":      order.OrderType,
-		"quantity":  order.Quantity.String(),
-		"timestamp": fmt.Sprintf("%d", timestamp),
+		"symbol":     order.Symbol,
+		"side":       order.Side,
+		"type":       order.OrderType,
+		"quantity":   order.Quantity.String(),
+		"timestamp":  fmt.Sprintf("%d", timestamp),
 		"recvWindow": "5000",
 	}
 
@@ -203,13 +213,28 @@ func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string
 	signature := c.signRequest(queryString, apiSecret)
 	url := fmt.Sprintf("%s/api/v3/order?%s&signature=%s", c.baseURL, queryString, signature)
 
-	body, _ := json.Marshal(params)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	// body, _ := json.Marshal(params)
+	// req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		"POST",
+		url,
+		nil,
+	)
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+
 	req.Header.Set("X-MBX-APIKEY", apiKey)
 	req.Header.Set("Content-Type", "application/json")
+
+	// Tambahan
+	req.Header.Set(
+		"Content-Type",
+		"application/x-www-form-urlencoded",
+	)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -224,12 +249,19 @@ func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string
 
 	var binanceResp struct {
 		OrderID     int64  `json:"orderId"`
-		Symbol     string `json:"symbol"`
+		Symbol      string `json:"symbol"`
 		ExecutedQty string `json:"executedQty"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&binanceResp); err != nil {
 		return nil, fmt.Errorf("failed to decode order response: %w", err)
 	}
+
+	c.logger.WithField("symbol", order.Symbol).
+		WithField("side", order.Side).
+		WithField("type", order.OrderType).
+		WithField("quantity", order.Quantity.String()).
+		WithField("query", queryString).
+		Debug("BINANCE ORDER REQUEST")
 
 	order.ExchangeOrderID = fmtPtr(fmt.Sprintf("%d", binanceResp.OrderID))
 	order.Status = "pending"
@@ -243,9 +275,11 @@ func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string
 //   - ctx: context.Context — context untuk HTTP request
 //   - apiKey, apiSecret: string — kredensial user
 //   - orderID: string — exchange order ID
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - c.signRequest: dipanggil untuk sign request
 //   - httpClient.Do: dipanggil untuk fetch order status
+//
 // Output/Return Value:
 //   - *models.Order: order dengan status updated
 //   - error: error jika fetch gagal
@@ -273,13 +307,13 @@ func (c *BinanceClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret st
 
 	var binanceOrder struct {
 		OrderID     int64  `json:"orderId"`
-		Symbol     string `json:"symbol"`
-		Side       string `json:"side"`
-		Type       string `json:"type"`
-		Price      string `json:"price"`
-		OrigQty    string `json:"origQty"`
+		Symbol      string `json:"symbol"`
+		Side        string `json:"side"`
+		Type        string `json:"type"`
+		Price       string `json:"price"`
+		OrigQty     string `json:"origQty"`
 		ExecutedQty string `json:"executedQty"`
-		Status     string `json:"status"`
+		Status      string `json:"status"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&binanceOrder); err != nil {
 		return nil, err
@@ -301,8 +335,10 @@ func (c *BinanceClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret st
 // Parameter/Value Input:
 //   - ctx: context.Context — context untuk HTTP request
 //   - symbol: string — symbol trading (contoh: BTCUSDT)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - httpClient.Do: dipanggil untuk fetch dari Binance ticker API
+//
 // Output/Return Value:
 //   - decimal.Decimal: harga terakhir
 //   - error: error jika fetch gagal
@@ -335,8 +371,10 @@ func (c *BinanceClient) GetPrice(ctx context.Context, symbol string) (decimal.De
 // Parameter/Value Input:
 //   - ctx: context.Context — context untuk HTTP request
 //   - symbol: string — symbol trading
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - httpClient.Do: dipanggil untuk fetch dari 24hr ticker API
+//
 // Output/Return Value:
 //   - *models.MarketSnapshot: snapshot harga dan volume
 //   - error: error jika fetch gagal
@@ -376,9 +414,11 @@ func (c *BinanceClient) GetTicker(ctx context.Context, symbol string) (*models.M
 //   - symbol: string — symbol trading (contoh: BTCUSDT)
 //   - interval: string — timeframe (1m, 5m, 15m, 1h, 4h, 1d, 1w)
 //   - limit: int — jumlah candle yang diambil (default 100, max 1000)
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - httpClient.Do: dipanggil untuk fetch dari Binance klines API
 //   - json.Unmarshal: dipanggil untuk parse response array
+//
 // Output/Return Value:
 //   - []models.MarketCandle: list candle data
 //   - error: error jika fetch gagal
@@ -473,7 +513,7 @@ func parseDecimal(s string) decimal.Decimal {
 }
 
 func fmtPtr(s string) *string {
-	return&s
+	return &s
 }
 
 func mapBinanceStatus(status string) string {
