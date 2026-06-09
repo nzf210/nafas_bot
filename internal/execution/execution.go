@@ -112,20 +112,24 @@ type ExecutionResult struct {
 	Error           error
 }
 
-// ExecuteMarket executes a market order
+// ExecuteMarket executes a market order and monitors it until filled.
+// After fill, creates SL/TP orders based on the execution plan.
 // Nama Function: ExecuteMarket
-// Deskripsi: Mengeksekusi market order ke exchange.
+// Deskripsi: Mengeksekusi market order ke exchange dengan monitoring sampai filled.
+// Setelah filled, otomatis membuat Stop Loss dan Take Profit orders.
 // Parameter/Value Input:
 //   - ctx: context.Context — context untuk HTTP request
 //   - userID: models.UUID — user ID untuk logging
-//   - plan: ExecutionPlan — rencana eksekusi
+//   - plan: ExecutionPlan — rencana eksekusi (Termasuk StopLoss dan TakeProfitLevels)
 //   - apiKey: string — API key (terenkripsi, perlu decrypt)
 //   - apiSecret: string — API secret (terenkripsi, perlu decrypt)
 // Function yang Dipanggil/Dikonsumsi:
 //   - exchange.PlaceOrder: dipanggil untuk kirim order ke exchange
+//   - exchange.GetOrderStatus: dipanggil untuk polling status order
+//   - exchange.PlaceOrder: dipanggil untuk buat SL/TP orders
 //   - logOrder: dipanggil untuk logging ke database
 // Output/Return Value:
-//   - *ExecutionResult: hasil eksekusi
+//   - *ExecutionResult: hasil eksekusi dengan SL/TP orders
 //   - error: error jika eksekusi gagal
 func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan ExecutionPlan, apiKey, apiSecret string) (*ExecutionResult, error) {
 	e.logger.WithField("symbol", plan.Symbol).
@@ -160,25 +164,234 @@ func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan E
 		return &ExecutionResult{Order: &order, Error: err}, err
 	}
 
+	// ============================================================
+	// MONITORING: Poll order status until filled or timeout
+	// ============================================================
+	monitorCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	monitoredOrder, err := e.monitorOrderUntilFilled(monitorCtx, filled, apiKey, apiSecret)
+	if err != nil {
+		e.logger.WithField("symbol", plan.Symbol).
+			WithField("order_id", order.ID.String()).
+			WithError(err).
+			Warn("EXEC: Order monitoring failed or timed out")
+		// Continue with the order as-is, don't fail the whole execution
+	}
+
 	result := &ExecutionResult{
-		Order: filled,
+		Order: monitoredOrder,
 	}
 
 	// Calculate execution price from fills
-	if filled.ExecutedQuantity.GreaterThan(decimal.Zero) {
-		result.ExecutionPrice = filled.Price
+	if monitoredOrder != nil && monitoredOrder.ExecutedQuantity.GreaterThan(decimal.Zero) {
+		result.ExecutionPrice = monitoredOrder.Price
 	}
 
-	e.logOrder(ctx, filled)
+	// Log the filled order to database
+	e.logOrder(ctx, monitoredOrder)
+
 	e.logger.WithField("symbol", plan.Symbol).
 		WithField("order_id", order.ID.String()).
-		WithField("exchange_order_id", ptrStr(filled.ExchangeOrderID)).
-		WithField("executed_qty", filled.ExecutedQuantity.String()).
-		WithField("price", filled.Price.String()).
-		WithField("status", filled.Status).
-		Info("EXEC SUCCESS: Order placed successfully")
+		WithField("exchange_order_id", ptrStr(monitoredOrder.ExchangeOrderID)).
+		WithField("executed_qty", monitoredOrder.ExecutedQuantity.String()).
+		WithField("price", monitoredOrder.Price.String()).
+		WithField("status", monitoredOrder.Status).
+		Info("EXEC SUCCESS: Order filled successfully")
+
+	// ============================================================
+	// CREATE SL/TP ORDERS: Only if order is filled
+	// ============================================================
+	if monitoredOrder != nil && monitoredOrder.Status == "filled" {
+		e.createSLTPOrders(ctx, userID, monitoredOrder, plan, apiKey, apiSecret)
+	}
 
 	return result, nil
+}
+
+// monitorOrderUntilFilled polls Binance until order is filled or timeout.
+// Returns the final order status.
+// Nama Function: monitorOrderUntilFilled
+// Deskripsi: Memonitor order sampai status berubah menjadi filled atau rejected.
+// Menggunakan polling setiap 2 detik dengan timeout 2 menit.
+// Parameter/Value Input:
+//   - ctx: context.Context — context dengan timeout
+//   - order: *models.Order — order yang sudah dikirim ke exchange
+//   - apiKey: string — API key
+//   - apiSecret: string — API secret
+// Function yang Dipanggil/Dikonsumsi:
+//   - exchange.GetOrderStatus: dipanggil setiap 2 detik untuk cek status
+// Output/Return Value:
+//   - *models.Order: order dengan status final
+//   - error: error jika timeout atau gagal polling
+func (e *Executor) monitorOrderUntilFilled(ctx context.Context, order *models.Order, apiKey, apiSecret string) (*models.Order, error) {
+	if order == nil || order.ExchangeOrderID == nil {
+		return order, nil
+	}
+
+	orderID := *order.ExchangeOrderID
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	e.logger.WithField("symbol", order.Symbol).
+		WithField("exchange_order_id", orderID).
+		Info("EXEC: Starting order monitoring")
+
+	for {
+		select {
+		case <-ctx.Done():
+			e.logger.WithField("exchange_order_id", orderID).
+				Warn("EXEC: Order monitoring timed out")
+			return order, ctx.Err()
+		case <-ticker.C:
+			updatedOrder, err := e.exchange.GetOrderStatus(ctx, apiKey, apiSecret, orderID)
+			if err != nil {
+				e.logger.WithError(err).WithField("exchange_order_id", orderID).
+					Warn("EXEC: Failed to get order status, retrying...")
+				continue
+			}
+
+			e.logger.WithField("symbol", updatedOrder.Symbol).
+				WithField("exchange_order_id", orderID).
+				WithField("status", updatedOrder.Status).
+				WithField("executed_qty", updatedOrder.ExecutedQuantity.String()).
+				Debug("EXEC: Order status update")
+
+			// Check if order is in terminal state
+			if updatedOrder.Status == "filled" || updatedOrder.Status == "cancelled" ||
+				updatedOrder.Status == "rejected" || updatedOrder.Status == "expired" {
+				e.logger.WithField("symbol", updatedOrder.Symbol).
+					WithField("exchange_order_id", orderID).
+					WithField("final_status", updatedOrder.Status).
+					Info("EXEC: Order reached terminal state")
+				return updatedOrder, nil
+			}
+		}
+	}
+}
+
+// createSLTPOrders creates Stop Loss and Take Profit limit orders after entry is filled.
+// Nama Function: createSLTPOrders
+// Deskripsi: Membuat Stop Loss dan Take Profit limit orders setelah entry filled.
+// SL adalah SELL order di bawah entry price. TP adalah SELL order di atas entry price.
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk HTTP request
+//   - userID: models.UUID — user ID untuk logging
+//   - entryOrder: *models.Order — order entry yang sudah filled
+//   - plan: ExecutionPlan — rencana eksekusi dengan StopLoss dan TakeProfitLevels
+//   - apiKey: string — API key
+//   - apiSecret: string — API secret
+// Function yang Dipanggil/Dikonsumsi:
+//   - exchange.PlaceOrder: dipanggil untuk buat SL dan TP orders
+//   - logOrder: dipanggil untuk logging SL/TP orders
+// Output/Return Value:
+//   - Tidak ada return value langsung (orders di-log ke database)
+// Catatan: Jika SL/TP creation gagal, hanya log warning, tidak fail seluruh execution
+func (e *Executor) createSLTPOrders(ctx context.Context, userID models.UUID, entryOrder *models.Order, plan ExecutionPlan, apiKey, apiSecret string) {
+	if entryOrder == nil || entryOrder.Price.LessThanOrEqual(decimal.Zero) {
+		e.logger.Warn("EXEC: Cannot create SL/TP - invalid entry price")
+		return
+	}
+
+	entryPrice := entryOrder.Price
+	executedQty := entryOrder.ExecutedQuantity
+	symbol := entryOrder.Symbol
+
+	e.logger.WithField("symbol", symbol).
+		WithField("entry_price", entryPrice.String()).
+		WithField("quantity", executedQty.String()).
+		Info("EXEC: Creating SL/TP orders")
+
+	// ============================================================
+	// CREATE STOP LOSS ORDER (SELL if price drops below entry)
+	// ============================================================
+	if plan.StopLoss.GreaterThan(decimal.Zero) {
+		// StopLoss dalam plan adalah PERSENTASE (e.g., 2.0 = 2%)
+		// Hitung absolute stop loss price
+		slPercent := plan.StopLoss
+		slPercentDecimal := slPercent.Div(decimal.NewFromFloat(100))
+		slPrice := entryPrice.Mul(decimal.NewFromInt(1).Sub(slPercentDecimal))
+
+		// Create SELL order for Stop Loss
+		slOrder := models.Order{
+			ID:        uuid.New(),
+			UserID:    userID,
+			Exchange:  e.exchange.GetName(),
+			Symbol:    symbol,
+			Side:      "SELL",
+			OrderType: "STOP_LOSS_LIMIT",
+			Quantity:  executedQty,
+			Price:     slPrice,
+			Status:    "pending",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+
+		slFilled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, slOrder)
+		if err != nil {
+			e.logger.WithError(err).
+				WithField("symbol", symbol).
+				WithField("sl_price", slPrice.String()).
+				Error("EXEC FAILED: Failed to place Stop Loss order")
+		} else {
+			e.logOrder(ctx, slFilled)
+			e.logger.WithField("symbol", symbol).
+				WithField("exchange_order_id", ptrStr(slFilled.ExchangeOrderID)).
+				WithField("sl_price", slPrice.String()).
+				Info("EXEC SUCCESS: Stop Loss order placed")
+		}
+	}
+
+	// ============================================================
+	// CREATE TAKE PROFIT ORDERS (SELL if price rises above entry)
+	// ============================================================
+	for i, tp := range plan.TakeProfitLevels {
+		// TargetPercent dalam plan adalah PERSENTASE (e.g., 3.0 = 3%)
+		tpPercent := decimal.NewFromFloat(tp.TargetPercent)
+		tpPercentDecimal := tpPercent.Div(decimal.NewFromFloat(100))
+		tpPrice := entryPrice.Mul(decimal.NewFromInt(1).Add(tpPercentDecimal))
+
+		// Calculate quantity for this TP level
+		tpQtyPercent := decimal.NewFromFloat(tp.QuantityPercent).Div(decimal.NewFromFloat(100))
+		tpQty := executedQty.Mul(tpQtyPercent)
+
+		// Ensure minimum quantity
+		if tpQty.LessThan(decimal.NewFromFloat(0.0001)) {
+			tpQty = executedQty // Use full quantity if percentage too small
+		}
+
+		// Create SELL order for Take Profit
+		tpOrder := models.Order{
+			ID:        uuid.New(),
+			UserID:    userID,
+			Exchange:  e.exchange.GetName(),
+			Symbol:    symbol,
+			Side:      "SELL",
+			OrderType: "TAKE_PROFIT_LIMIT",
+			Quantity:  tpQty,
+			Price:     tpPrice,
+			Status:    "pending",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+
+		tpFilled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, tpOrder)
+		if err != nil {
+			e.logger.WithError(err).
+				WithField("symbol", symbol).
+				WithField("tp_level", i+1).
+				WithField("tp_price", tpPrice.String()).
+				Error("EXEC FAILED: Failed to place Take Profit order")
+		} else {
+			e.logOrder(ctx, tpFilled)
+			e.logger.WithField("symbol", symbol).
+				WithField("exchange_order_id", ptrStr(tpFilled.ExchangeOrderID)).
+				WithField("tp_level", i+1).
+				WithField("tp_price", tpPrice.String()).
+				WithField("tp_quantity", tpQty.String()).
+				Info("EXEC SUCCESS: Take Profit order placed")
+		}
+	}
 }
 
 // ExecuteLimit executes a limit order

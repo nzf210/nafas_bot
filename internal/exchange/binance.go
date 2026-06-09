@@ -277,9 +277,16 @@ func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string
 		"recvWindow": "5000",
 	}
 
-	if order.OrderType == "LIMIT" {
+	if order.OrderType == "LIMIT" || order.OrderType == "STOP_LOSS_LIMIT" || order.OrderType == "TAKE_PROFIT_LIMIT" {
 		params["price"] = order.Price.String()
 		params["timeInForce"] = "GTC"
+	}
+
+	// Handle stop loss and take profit orders
+	if order.OrderType == "STOP_LOSS_LIMIT" || order.OrderType == "TAKE_PROFIT_LIMIT" {
+		// For SL/TP orders, price is the trigger price (stopPrice)
+		// We use the Price field as stopPrice
+		params["stopPrice"] = order.Price.String()
 	}
 
 	var keys []string
