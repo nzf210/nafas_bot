@@ -184,11 +184,13 @@ func (c *BinanceClient) GetBalances(ctx context.Context, apiKey, apiSecret strin
 func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string, order models.Order) (*models.Order, error) {
 	timestamp := time.Now().UnixMilli()
 
+	qty := c.normalizeQuantity(order.Symbol, order.Quantity)
+
 	params := map[string]string{
 		"symbol":     order.Symbol,
 		"side":       order.Side,
 		"type":       order.OrderType,
-		"quantity":   order.Quantity.String(),
+		"quantity":   qty.String(),
 		"timestamp":  fmt.Sprintf("%d", timestamp),
 		"recvWindow": "5000",
 	}
@@ -266,6 +268,13 @@ func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string
 	order.ExchangeOrderID = fmtPtr(fmt.Sprintf("%d", binanceResp.OrderID))
 	order.Status = "pending"
 	return &order, nil
+}
+
+func (c *BinanceClient) normalizeQuantity(
+	symbol string,
+	qty decimal.Decimal,
+) decimal.Decimal {
+	return qty.Truncate(5)
 }
 
 // GetOrderStatus retrieves order status from Binance
