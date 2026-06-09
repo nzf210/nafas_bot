@@ -842,6 +842,16 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 
 			positionSizeBase := positionSizeQuote.Div(data.LatestPrice)
 
+			// ============================================================
+			// SAFETY GUARD: Final check before execution
+			// ============================================================
+			if decision.TradeDecision != "BUY" && decision.TradeDecision != "SELL" {
+				pairLogger.WithField("decision", decision.TradeDecision).
+					WithField("symbol", p.Symbol).
+					Warn("SAFETY: Invalid trade decision at execution stage, skipping")
+				return
+			}
+
 			// Execute trade
 			plan := execution.ExecutionPlan{
 				Symbol:      p.Symbol,
