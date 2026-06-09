@@ -80,7 +80,7 @@ func GetUserContext(ctx context.Context, db *sql.DB, user *models.User) (*UserCo
 
 	// Check cache first
 	cache.mu.RLock()
-	if cached, ok := cache.context[userID]; ok {
+	if cached, ok := cache.context[userID]; ok && cached != nil {
 		if time.Since(cached.fetchedAt) < userContextCacheTTL {
 			cache.mu.RUnlock()
 			return cached, nil
@@ -94,9 +94,14 @@ func GetUserContext(ctx context.Context, db *sql.DB, user *models.User) (*UserCo
 		return nil, err
 	}
 
-	// Update cache
+	// Update cache (only if not nil to avoid storing sentinel values)
 	cache.mu.Lock()
-	cache.context[userID] = userCtx
+	if userCtx != nil {
+		cache.context[userID] = userCtx
+	} else {
+		// Remove any existing cached value for users without API key
+		delete(cache.context, userID)
+	}
 	cache.mu.Unlock()
 
 	return userCtx, nil
