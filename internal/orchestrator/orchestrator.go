@@ -861,15 +861,30 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 				MaxSlippage: decimal.NewFromFloat(0.005), // 0.5% max slippage
 			}
 
+			pairLogger.WithField("side", decision.TradeDecision).
+				WithField("quantity", positionSizeBase.String()).
+				WithField("symbol", p.Symbol).
+				WithField("confidence", decision.Confidence.String()).
+				Info("EXECUTING ORDER: Starting order execution")
+
 			executor := execution.NewExecutor(o.db, o.exchange)
 			result, err := executor.ExecuteMarket(ctx, user.ID, plan, userCtx.APIKey, userCtx.APISecret)
 			if err != nil {
-				pairLogger.WithError(err).Error("Trade execution failed")
+				pairLogger.WithError(err).
+					WithField("symbol", p.Symbol).
+					WithField("side", decision.TradeDecision).
+					WithField("quantity", positionSizeBase.String()).
+					Error("EXECUTION FAILED: Order execution failed")
 				return
 			}
 
-			pairLogger.Infof("Trade executed: %s %s @ %s",
-				decision.TradeDecision, positionSizeBase.String(), result.ExecutionPrice.String())
+			pairLogger.WithField("symbol", p.Symbol).
+				WithField("side", decision.TradeDecision).
+				WithField("quantity", positionSizeBase.String()).
+				WithField("executed_qty", result.Order.ExecutedQuantity.String()).
+				WithField("execution_price", result.ExecutionPrice.String()).
+				WithField("exchange_order_id", result.Order.ExchangeOrderID).
+				Info("EXECUTION SUCCESS: Order executed successfully")
 		}(pair)
 	}
 	wgPair.Wait()

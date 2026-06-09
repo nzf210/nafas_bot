@@ -128,7 +128,11 @@ type ExecutionResult struct {
 //   - *ExecutionResult: hasil eksekusi
 //   - error: error jika eksekusi gagal
 func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan ExecutionPlan, apiKey, apiSecret string) (*ExecutionResult, error) {
-	e.logger.Infof("Executing market order: %s %s %s", plan.Side, plan.Quantity.String(), plan.Symbol)
+	e.logger.WithField("symbol", plan.Symbol).
+		WithField("side", plan.Side).
+		WithField("quantity", plan.Quantity.String()).
+		WithField("order_type", plan.OrderType).
+		Info("EXEC: Placing market order to exchange")
 
 	order := models.Order{
 		ID:        uuid.New(),
@@ -143,9 +147,16 @@ func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan E
 		UpdatedAt: time.Now(),
 	}
 
+	e.logger.WithField("symbol", plan.Symbol).
+		WithField("order_id", order.ID.String()).
+		Debug("EXEC: Order created, sending to exchange")
+
 	filled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, order)
 	if err != nil {
-		e.logger.Errorf("Market order failed: %v", err)
+		e.logger.WithField("symbol", plan.Symbol).
+			WithField("order_id", order.ID.String()).
+			WithError(err).
+			Error("EXEC FAILED: Exchange rejected order")
 		return &ExecutionResult{Order: &order, Error: err}, err
 	}
 
@@ -159,7 +170,13 @@ func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan E
 	}
 
 	e.logOrder(ctx, filled)
-	e.logger.Infof("Market order executed: %s", ptrStr(filled.ExchangeOrderID))
+	e.logger.WithField("symbol", plan.Symbol).
+		WithField("order_id", order.ID.String()).
+		WithField("exchange_order_id", ptrStr(filled.ExchangeOrderID)).
+		WithField("executed_qty", filled.ExecutedQuantity.String()).
+		WithField("price", filled.Price.String()).
+		WithField("status", filled.Status).
+		Info("EXEC SUCCESS: Order placed successfully")
 
 	return result, nil
 }
