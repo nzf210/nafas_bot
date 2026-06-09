@@ -189,10 +189,30 @@ type SymbolFilter struct {
 	MaxQty   decimal.Decimal
 }
 
+func (c *BinanceClient) validatePrecision(symbol string, qty decimal.Decimal) error {
+	f := c.getLotSize(symbol)
+
+	if f.StepSize.IsZero() {
+		return nil
+	}
+
+	expected := qty.Div(f.StepSize).Floor().Mul(f.StepSize)
+
+	if !qty.Equal(expected) {
+		return fmt.Errorf("invalid precision for %s", symbol)
+	}
+
+	return nil
+}
+
 func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string, order models.Order) (*models.Order, error) {
 	timestamp := time.Now().UnixMilli()
 
-	qty := c.normalizeQuantity(order.Symbol, order.Quantity)
+	qty := c.fixQuantity(order.Symbol, order.Quantity)
+	// 🔒 VALIDATION GATE (WAJIB CHECK ERROR)
+	if err := c.validatePrecision(order.Symbol, qty); err != nil {
+		return nil, fmt.Errorf("precision validation failed: %w", err)
+	}
 
 	params := map[string]string{
 		"symbol":     order.Symbol,
@@ -278,24 +298,30 @@ func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string
 	return &order, nil
 }
 
-func (c *BinanceClient) normalizeQuantity(
-	symbol string,
-	qty decimal.Decimal,
-) decimal.Decimal {
-
+func (c *BinanceClient) fixQuantity(symbol string, qty decimal.Decimal) decimal.Decimal {
 	f := c.getLotSize(symbol)
 
-	// kalau belum ada data exchangeInfo → fallback aman
+	// fallback kalau belum ada rule
 	if f.StepSize.IsZero() {
-		return qty
+		return qty.Truncate(8)
 	}
 
-	// FLOOR ke stepSize Binance
+	// kalau qty terlalu kecil
+	if qty.LessThan(f.MinQty) && !f.MinQty.IsZero() {
+		return f.MinQty
+	}
+
+	// kalau terlalu besar
+	if qty.GreaterThan(f.MaxQty) && !f.MaxQty.IsZero() {
+		return f.MaxQty
+	}
+
+	// snap ke stepSize (floor biar aman dari reject Binance)
 	qty = qty.Div(f.StepSize).Floor().Mul(f.StepSize)
 
-	// safety guard
-	if qty.IsNegative() {
-		return decimal.Zero
+	// safety: hindari 0 setelah pembulatan
+	if qty.IsZero() {
+		return f.MinQty
 	}
 
 	return qty
