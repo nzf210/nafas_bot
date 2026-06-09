@@ -74,7 +74,7 @@ type Orchestrator struct {
 	pairManager *scanner.PairManager
 
 	// AI decision cache — 1 LLM call per unique symbol (bukan per user)
-	decisionCache    map[string]*decisionCacheEntry
+	decisionCache   map[string]*decisionCacheEntry
 	decisionCacheMu sync.RWMutex
 }
 
@@ -97,15 +97,15 @@ type Orchestrator struct {
 //   - *Orchestrator: pointer ke orchestrator instance
 func NewOrchestrator(db *sql.DB, exch exchange.Exchange, scan *scanner.Scanner, taClient ai.AIClient, eng *strategy.StrategyEngine, cfg *config.Config, pm *scanner.PairManager) *Orchestrator {
 	return &Orchestrator{
-		db:          db,
-		exchange:    exch,
-		scanner:     scan,
-		ai:          taClient,
-		engine:      eng,
-		logger:      logger.Default().WithField("module", "orchestrator"),
-		stopCh:      make(chan struct{}),
-		config:      cfg,
-		pairManager: pm,
+		db:            db,
+		exchange:      exch,
+		scanner:       scan,
+		ai:            taClient,
+		engine:        eng,
+		logger:        logger.Default().WithField("module", "orchestrator"),
+		stopCh:        make(chan struct{}),
+		config:        cfg,
+		pairManager:   pm,
 		decisionCache: make(map[string]*decisionCacheEntry),
 	}
 }
@@ -498,7 +498,7 @@ func (o *Orchestrator) preComputeAIDecisions(ctx context.Context, marketData map
 				// Default to HOLD for sideways markets
 				o.cacheDecision(sym, &ai.CoordinatorDecision{
 					TradeDecision: "HOLD",
-					Confidence:   decimal.NewFromFloat(50),
+					Confidence:    decimal.NewFromFloat(50),
 					MarketContext: ai.MarketContext{
 						Regime:           "crab",
 						OverallSentiment: "Sideways market - no clear trend",
@@ -560,11 +560,11 @@ func (o *Orchestrator) preComputeAIDecisions(ctx context.Context, marketData map
 			// ============================================================
 			marketDataMap := map[string]any{
 				"latest_price": data.LatestPrice.String(),
-				"volume_24h":  data.Volume24h.String(),
-				"interval":    data.Interval,
-				"rsi":         rsi.StringFixed(0),
-				"trend":       trend.StringFixed(2),
-				"candles":     data.Candles,
+				"volume_24h":   data.Volume24h.String(),
+				"interval":     data.Interval,
+				"rsi":          rsi.StringFixed(0),
+				"trend":        trend.StringFixed(2),
+				"candles":      data.Candles,
 			}
 
 			// Call AI (cached for all users)
@@ -842,6 +842,18 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 
 			positionSizeBase := positionSizeQuote.Div(data.LatestPrice)
 
+			type lotSizeFixer interface {
+				FixQuantity(symbol string, qty decimal.Decimal) decimal.Decimal
+			}
+			if fixer, ok := o.exchange.(lotSizeFixer); ok {
+				positionSizeBase = fixer.FixQuantity(p.Symbol, positionSizeBase)
+			}
+
+			if positionSizeBase.LessThanOrEqual(decimal.Zero) {
+				pairLogger.Warn("Position size zero after LOT_SIZE rounding, skipping")
+				return
+			}
+			// ────
 			// ============================================================
 			// SAFETY GUARD: Final check before execution
 			// ============================================================

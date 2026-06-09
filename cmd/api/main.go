@@ -37,6 +37,7 @@ import (
 // Deskripsi: Entry point utama aplikasi. Melakukan inisialisasi semua services dan start HTTP server.
 // Parameter/Value Input:
 //   - Tidak ada parameter input langsung, membaca dari environment variables
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - config.Load: dipanggil untuk load konfigurasi
 //   - database.Connect: dipanggil untuk koneksi ke PostgreSQL
@@ -51,6 +52,7 @@ import (
 //   - execution.NewExecutor: dipanggil untuk inisialisasi executor
 //   - telegram.NewBotWithConfig: dipanggil untuk inisialisasi Telegram bot
 //   - http.ListenAndServe: dipanggil untuk start HTTP server
+//
 // Output/Return Value:
 //   - Tidak ada return value langsung, aplikasi exit dengan code 0 atau 1
 func main() {
@@ -85,9 +87,9 @@ func main() {
 
 	// Auto-apply recent schema migrations programmatically
 	autoMigrateQueries := []struct {
-		sql       string
-		desc      string
-		critical  bool // if true, exit app if this migration fails
+		sql      string
+		desc     string
+		critical bool // if true, exit app if this migration fails
 	}{
 		{"ALTER TABLE trading_pairs ADD COLUMN IF NOT EXISTS exchange VARCHAR(50) DEFAULT 'Binance';", "add exchange column to trading_pairs", true},
 		{"ALTER TABLE trading_pairs DROP CONSTRAINT IF EXISTS unique_user_exchange_symbol;", "drop old unique constraint (no-op if not exists)", false},
@@ -119,29 +121,37 @@ func main() {
 	binanceClient := exchange.NewBinance()
 	logg.Infof("Exchange client initialized: %s", binanceClient.GetName())
 
+	// Load LOT_SIZE filters — WAJIB sebelum bot mulai trading
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelStartup()
+
+	if err := binanceClient.LoadSymbolFilters(startupCtx); err != nil {
+		log.Fatalf("Failed to load Binance symbol filters: %v", err)
+	}
+
 	// Initialize scanner with empty pairs initially
 	marketScanner := scanner.NewScanner(
 		binanceClient,
 		[]string{}, // Start empty, will be populated by PairManager
 		[]string{"1h", "4h", "1d"},
 	)
-	
+
 	// Initialize PairManager
 	pairManager := scanner.NewPairManager(db)
-	
+
 	// Load existing pairs from database
 	if err := pairManager.LoadFromDB(); err != nil {
 		logg.Errorf("Failed to load pairs from DB: %v", err)
 	}
-	
+
 	pairManager.RegisterScanner(binanceClient.GetName(), marketScanner)
-	
+
 	// Add default system pairs
 	defaultPairs := []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"}
 	for _, pair := range defaultPairs {
 		pairManager.AddUserPair("system", binanceClient.GetName(), pair)
 	}
-	
+
 	logg.Info("Market scanner and PairManager initialized")
 
 	// Initialize AI Coordinator (Direct LLM - Meridian-style)
@@ -185,7 +195,7 @@ func main() {
 			MaxPairsPerUser: cfg.MaxPairsPerUser,
 		})
 		telegramBot.RegisterDefaultHandlers()
-		
+
 		if cfg.TelegramWebhookURL != "" {
 			if err := telegramBot.SetWebhook(cfg.TelegramWebhookURL + "/webhook"); err != nil {
 				logg.Errorf("Failed to set webhook: %v", err)
@@ -193,7 +203,7 @@ func main() {
 				logg.Infof("Webhook set to %s/webhook", cfg.TelegramWebhookURL)
 			}
 		}
-		
+
 		telegramBot.Start()
 		logg.Infof("Telegram bot initialized with queue system")
 	}
@@ -253,8 +263,10 @@ func main() {
 // Parameter/Value Input:
 //   - w: http.ResponseWriter — response writer
 //   - r: *http.Request — incoming request
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - json.NewEncoder: dipanggil untuk encode JSON response
+//
 // Output/Return Value:
 //   - Tidak ada return value langsung
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -267,9 +279,11 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 // Deskripsi: Handler untuk Telegram webhook endpoint.
 // Parameter/Value Input:
 //   - bot: *telegram.Bot — Telegram bot instance
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - bot.HandleUpdate: dipanggil untuk proses setiap update
 //   - json.NewDecoder: dipanggil untuk decode incoming JSON
+//
 // Output/Return Value:
 //   - http.HandlerFunc: handler function untuk webhook
 func webhookHandler(bot *telegram.Bot) http.HandlerFunc {
@@ -298,9 +312,11 @@ func webhookHandler(bot *telegram.Bot) http.HandlerFunc {
 // Deskripsi: Handler untuk market data API endpoint.
 // Parameter/Value Input:
 //   - scanner: *scanner.Scanner — scanner instance
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - scanner.FetchTicker: dipanggil untuk ambil ticker data
 //   - scanner.FetchCandles: dipanggil untuk ambil candle data
+//
 // Output/Return Value:
 //   - http.HandlerFunc: handler function untuk market API
 func marketHandler(scanner *scanner.Scanner) http.HandlerFunc {
@@ -329,8 +345,10 @@ func marketHandler(scanner *scanner.Scanner) http.HandlerFunc {
 // Deskripsi: Handler untuk balance API endpoint.
 // Parameter/Value Input:
 //   - exchange: exchange.Exchange — exchange client
+//
 // Function yang Dipanggil/Dikonsumsi:
 //   - exchange.GetPrice: dipanggil untuk ambil harga asset
+//
 // Output/Return Value:
 //   - http.HandlerFunc: handler function untuk balance API
 func balanceHandler(exchange exchange.Exchange) http.HandlerFunc {

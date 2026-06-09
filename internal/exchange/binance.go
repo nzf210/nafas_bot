@@ -24,6 +24,60 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Tambah method ini di BinanceClient
+func (c *BinanceClient) LoadSymbolFilters(ctx context.Context) error {
+	url := fmt.Sprintf("%s/api/v3/exchangeInfo", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var info struct {
+		Symbols []struct {
+			Symbol  string `json:"symbol"`
+			Filters []struct {
+				FilterType string `json:"filterType"`
+				StepSize   string `json:"stepSize"`
+				MinQty     string `json:"minQty"`
+				MaxQty     string `json:"maxQty"`
+			} `json:"filters"`
+		} `json:"symbols"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return err
+	}
+
+	c.symbolFilters = make(map[string]SymbolFilter)
+	for _, s := range info.Symbols {
+		for _, f := range s.Filters {
+			if f.FilterType == "LOT_SIZE" {
+				step, _ := decimal.NewFromString(f.StepSize)
+				minQty, _ := decimal.NewFromString(f.MinQty)
+				maxQty, _ := decimal.NewFromString(f.MaxQty)
+				c.symbolFilters[s.Symbol] = SymbolFilter{
+					StepSize: step,
+					MinQty:   minQty,
+					MaxQty:   maxQty,
+				}
+			}
+		}
+	}
+
+	c.logger.Infof("Loaded LOT_SIZE filters for %d symbols", len(c.symbolFilters))
+	return nil
+}
+
+// Expose fixQuantity sebagai public agar orchestrator bisa pakai
+func (c *BinanceClient) FixQuantity(symbol string, qty decimal.Decimal) decimal.Decimal {
+	return c.fixQuantity(symbol, qty)
+}
+
 // Exchange interface for all exchange implementations
 // Nama Function: Exchange
 // Deskripsi: Interface untuk semua implementasi exchange.
@@ -300,6 +354,12 @@ func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string
 
 func (c *BinanceClient) fixQuantity(symbol string, qty decimal.Decimal) decimal.Decimal {
 	f := c.getLotSize(symbol)
+	c.logger.Infof("LOT_SIZE DEBUG %s step=%s min=%s max=%s",
+		symbol,
+		f.StepSize.String(),
+		f.MinQty.String(),
+		f.MaxQty.String(),
+	)
 
 	// fallback kalau belum ada rule
 	if f.StepSize.IsZero() {
