@@ -632,25 +632,26 @@ func calculateTrend(candles []models.MarketCandle) decimal.Decimal {
 
 // getAdaptiveTTL returns TTL based on confidence level.
 // Higher confidence = longer cache (reduce calls for confident decisions).
+// Batas: 1 jam per pair untuk minimize token usage.
 func getAdaptiveTTL(confidence decimal.Decimal) time.Duration {
 	conf, _ := confidence.Float64()
 	switch {
 	case conf >= 90:
-		return 15 * time.Minute
+		return 60 * time.Minute
 	case conf >= 80:
-		return 10 * time.Minute
+		return 60 * time.Minute
 	default:
-		return 7 * time.Minute
+		return 60 * time.Minute
 	}
 }
 
-// cacheDecision caches a decision with default TTL (7 minutes).
+// cacheDecision caches a decision with default TTL (60 minutes per pair).
 func (o *Orchestrator) cacheDecision(symbol string, decision *ai.CoordinatorDecision) {
 	o.decisionCacheMu.Lock()
 	defer o.decisionCacheMu.Unlock()
 	o.decisionCache[symbol] = &decisionCacheEntry{
 		decision: decision,
-		expireAt: time.Now().Add(7 * time.Minute),
+		expireAt: time.Now().Add(60 * time.Minute),
 	}
 }
 

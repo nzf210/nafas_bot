@@ -154,11 +154,11 @@ func getAdaptiveTTL(confidence decimal.Decimal) time.Duration {
 	conf, _ := confidence.Float64()
 	switch {
 	case conf >= 90:
-		return 15 * time.Minute
+		return 60 * time.Minute
 	case conf >= 80:
-		return 10 * time.Minute
+		return 60 * time.Minute
 	default:
-		return 7 * time.Minute
+		return 60 * time.Minute
 	}
 }
 
