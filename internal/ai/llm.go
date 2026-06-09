@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nzf210/nafas-bot/internal/logger"
@@ -84,10 +85,10 @@ func NewLLMClient(baseURL, apiKey, model string, temperature float64, maxTokens 
 //   - error: error jika check gagal
 func (c *LLMClient) HealthCheck(ctx context.Context) (bool, error) {
 	// Simple check: try to call the API with a minimal request
-	reqBody := map[string]interface{}{
+	reqBody := map[string]any{
 		"model": c.model,
-		"messages": []map[string]interface{}{
-			{"role": "user", "content": "hi"},
+		"messages": []any{
+			map[string]string{"role": "user", "content": "hi"},
 		},
 		"max_tokens": 5,
 	}
@@ -116,6 +117,7 @@ func (c *LLMClient) HealthCheck(ctx context.Context) (bool, error) {
 }
 
 // Decide generates a trading decision using direct LLM call
+// Uses compact prompt format to minimize token usage (~50% reduction).
 // Nama Function: Decide
 // Deskripsi: Generate trading decision via direct LLM call.
 // Convert response ke CoordinatorDecision untuk kompatibilitas dengan orchestrator.
@@ -125,6 +127,7 @@ func (c *LLMClient) HealthCheck(ctx context.Context) (bool, error) {
 //   - marketData: map[string]interface{} — market data dari scanner
 //   - systemPrompt: string — system prompt (unused, prompt built internally)
 // Function yang Dipanggil/Dikonsumsi:
+//   - buildPromptCompact: dipanggil untuk build compact prompt (token-optimized)
 //   - callLLM: dipanggil untuk kirim request ke LLM provider
 //   - parseLLMResponse: dipanggil untuk parse response
 // Output/Return Value:
@@ -133,8 +136,8 @@ func (c *LLMClient) HealthCheck(ctx context.Context) (bool, error) {
 func (c *LLMClient) Decide(ctx context.Context, symbol string, marketData map[string]interface{}, systemPrompt string) (*CoordinatorDecision, error) {
 	log := logger.Default().WithField("module", "ai/llm")
 
-	// Build prompt dari market data
-	prompt := c.buildPrompt(symbol, marketData)
+	// Build compact prompt to minimize token usage
+	prompt := c.buildPromptCompact(symbol, marketData)
 
 	// Call LLM with retry logic
 	response, err := c.callLLM(ctx, prompt)
@@ -156,6 +159,67 @@ func (c *LLMClient) Decide(ctx context.Context, symbol string, marketData map[st
 		Info("LLM decision generated")
 
 	return decision, nil
+}
+
+// buildPromptCompact constructs a compact analysis prompt to minimize token usage.
+// Only last 10 candles are sent, and field names are shortened.
+func (c *LLMClient) buildPromptCompact(symbol string, marketData map[string]interface{}) string {
+	price := getStringField(marketData, "latest_price", "N/A")
+	volume := getStringField(marketData, "volume_24h", "N/A")
+	rsi := getStringField(marketData, "rsi", "N/A")
+	trend := getStringField(marketData, "trend", "N/A")
+
+	// Compress candles to only last 10
+	candlesStr := compressCandlesToString(getCandles(marketData), 10)
+
+	return fmt.Sprintf(`NAFAS %s|P=%s V=%s RSI=%s T=%s|C:%s|JSON:{"a":"","c":0,"r":"","sl":0,"tp":[0],"rl":""}`,
+		symbol, price, volume, rsi, trend, candlesStr)
+}
+
+// compressCandlesToString compresses candles to a compact string format.
+// Only last N candles are included to minimize token usage.
+func compressCandlesToString(candles interface{}, limit int) string {
+	list, ok := candles.([]interface{})
+	if !ok || len(list) == 0 {
+		return "[]"
+	}
+
+	// Take only last N candles
+	start := 0
+	if len(list) > limit {
+		start = len(list) - limit
+	}
+
+	var parts []string
+	for i := start; i < len(list); i++ {
+		if candle, ok := list[i].(map[string]interface{}); ok {
+			o := getMapString(candle, "open", "0")
+			h := getMapString(candle, "high", "0")
+			l := getMapString(candle, "low", "0")
+			c := getMapString(candle, "close", "0")
+			v := getMapString(candle, "volume", "0")
+			parts = append(parts, fmt.Sprintf("[%s,%s,%s,%s,%s]", o, h, l, c, v))
+		}
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
+// getMapString safely extracts a string from a map
+func getMapString(m map[string]interface{}, key, fallback string) string {
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return fallback
+}
+
+// getCandles extracts candles from market data map
+func getCandles(m map[string]interface{}) interface{} {
+	if v, ok := m["candles"]; ok {
+		return v
+	}
+	return nil
 }
 
 // buildPrompt constructs the analysis prompt from market data

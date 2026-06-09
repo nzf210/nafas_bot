@@ -480,12 +480,91 @@ func (o *Orchestrator) preComputeAIDecisions(ctx context.Context, marketData map
 				}
 			}
 
-			// Build market data map for AI
+			// ============================================================
+			// TOKEN OPTIMIZATION: Pre-calculate indicators in Go
+			// ============================================================
+			var rsi decimal.Decimal
+			var trend decimal.Decimal
+			if len(data.Candles) > 0 {
+				rsi, _ = o.scanner.CalculateRSI(data.Candles, 14)
+				trend = calculateTrend(data.Candles)
+			}
+
+			// ============================================================
+			// TOKEN OPTIMIZATION: Trend-only filter (skip sideways markets)
+			// ============================================================
+			if !hasStrongTrend(data.Candles, 2.0) { // >2% change over 20 candles
+				o.logger.WithField("symbol", sym).Debug("Filtered: no strong trend (sideways market)")
+				// Default to HOLD for sideways markets
+				o.cacheDecision(sym, &ai.CoordinatorDecision{
+					TradeDecision: "HOLD",
+					Confidence:   decimal.NewFromFloat(50),
+					MarketContext: ai.MarketContext{
+						Regime:           "crab",
+						OverallSentiment: "Sideways market - no clear trend",
+					},
+				})
+				return
+			}
+
+			// ============================================================
+			// TOKEN OPTIMIZATION: RSI zone filter (rule-based fallback)
+			// ============================================================
+			if rsi.GreaterThanOrEqual(decimal.NewFromFloat(40)) && rsi.LessThanOrEqual(decimal.NewFromFloat(60)) {
+				// RSI neutral zone - skip LLM, default to HOLD
+				o.logger.WithField("symbol", sym).WithField("rsi", rsi.String()).Debug("Filtered: RSI neutral zone")
+				o.cacheDecision(sym, &ai.CoordinatorDecision{
+					TradeDecision: "HOLD",
+					Confidence:    decimal.NewFromFloat(50),
+					MarketContext: ai.MarketContext{
+						Regime:           "crab",
+						OverallSentiment: "RSI neutral zone (40-60)",
+					},
+				})
+				return
+			}
+
+			// RSI extreme zones - rule-based decision (skip LLM)
+			if rsi.LessThan(decimal.NewFromFloat(25)) {
+				// Extreme oversold - BUY signal
+				o.logger.WithField("symbol", sym).WithField("rsi", rsi.String()).Debug("Rule-based: RSI extreme oversold")
+				o.cacheDecision(sym, &ai.CoordinatorDecision{
+					TradeDecision: "BUY",
+					Confidence:    decimal.NewFromFloat(75),
+					MarketContext: ai.MarketContext{
+						Regime:           "bear",
+						OverallSentiment: "RSI extreme oversold - oversold bounce likely",
+					},
+					RiskAssessment: ai.RiskAssessment{Level: "medium"},
+				})
+				return
+			}
+
+			if rsi.GreaterThan(decimal.NewFromFloat(75)) {
+				// Extreme overbought - SELL signal
+				o.logger.WithField("symbol", sym).WithField("rsi", rsi.String()).Debug("Rule-based: RSI extreme overbought")
+				o.cacheDecision(sym, &ai.CoordinatorDecision{
+					TradeDecision: "SELL",
+					Confidence:    decimal.NewFromFloat(75),
+					MarketContext: ai.MarketContext{
+						Regime:           "bull",
+						OverallSentiment: "RSI extreme overbought - correction likely",
+					},
+					RiskAssessment: ai.RiskAssessment{Level: "medium"},
+				})
+				return
+			}
+
+			// ============================================================
+			// Build market data map for AI (with pre-calculated indicators)
+			// ============================================================
 			marketDataMap := map[string]any{
-				"latest_price":    data.LatestPrice.String(),
-				"volume_24h":     data.Volume24h.String(),
-				"interval":       data.Interval,
-				"candles":        data.Candles,
+				"latest_price": data.LatestPrice.String(),
+				"volume_24h":  data.Volume24h.String(),
+				"interval":    data.Interval,
+				"rsi":         rsi.StringFixed(0),
+				"trend":       trend.StringFixed(2),
+				"candles":     data.Candles,
 			}
 
 			// Call AI (cached for all users)
@@ -495,13 +574,8 @@ func (o *Orchestrator) preComputeAIDecisions(ctx context.Context, marketData map
 				return
 			}
 
-			// Cache the decision (5 min TTL)
-			o.decisionCacheMu.Lock()
-			o.decisionCache[sym] = &decisionCacheEntry{
-				decision: decision,
-				expireAt: time.Now().Add(5 * time.Minute),
-			}
-			o.decisionCacheMu.Unlock()
+			// Cache the decision with adaptive TTL based on confidence
+			o.cacheDecisionWithTTL(sym, decision, getAdaptiveTTL(decision.Confidence))
 
 			o.logger.WithField("symbol", sym).
 				WithField("decision", decision.TradeDecision).
@@ -524,6 +598,69 @@ func (o *Orchestrator) cleanDecisionCache() {
 		if now.After(entry.expireAt) {
 			delete(o.decisionCache, symbol)
 		}
+	}
+}
+
+// hasStrongTrend checks if candles show a strong trend (>minChangePercent over 20 candles).
+// Returns true if not enough data (let LLM decide).
+func hasStrongTrend(candles []models.MarketCandle, minChangePercent float64) bool {
+	if len(candles) < 20 {
+		return true // Not enough data, let LLM decide
+	}
+	recent := candles[len(candles)-1].Close
+	older := candles[len(candles)-20].Close
+	if older.IsZero() {
+		return true
+	}
+	change := recent.Sub(older).Div(older).Abs()
+	return change.GreaterThan(decimal.NewFromFloat(minChangePercent / 100))
+}
+
+// calculateTrend calculates trend direction from candles.
+// Returns positive for bull, negative for bear, 0 for neutral.
+func calculateTrend(candles []models.MarketCandle) decimal.Decimal {
+	if len(candles) < 20 {
+		return decimal.Zero
+	}
+	recent := candles[len(candles)-1].Close
+	older := candles[len(candles)-20].Close
+	if older.IsZero() {
+		return decimal.Zero
+	}
+	return recent.Sub(older).Div(older).Mul(decimal.NewFromFloat(100))
+}
+
+// getAdaptiveTTL returns TTL based on confidence level.
+// Higher confidence = longer cache (reduce calls for confident decisions).
+func getAdaptiveTTL(confidence decimal.Decimal) time.Duration {
+	conf, _ := confidence.Float64()
+	switch {
+	case conf >= 90:
+		return 15 * time.Minute
+	case conf >= 80:
+		return 10 * time.Minute
+	default:
+		return 7 * time.Minute
+	}
+}
+
+// cacheDecision caches a decision with default TTL (7 minutes).
+func (o *Orchestrator) cacheDecision(symbol string, decision *ai.CoordinatorDecision) {
+	o.decisionCacheMu.Lock()
+	defer o.decisionCacheMu.Unlock()
+	o.decisionCache[symbol] = &decisionCacheEntry{
+		decision: decision,
+		expireAt: time.Now().Add(7 * time.Minute),
+	}
+}
+
+// cacheDecisionWithTTL caches a decision with custom TTL.
+func (o *Orchestrator) cacheDecisionWithTTL(symbol string, decision *ai.CoordinatorDecision, ttl time.Duration) {
+	o.decisionCacheMu.Lock()
+	defer o.decisionCacheMu.Unlock()
+	o.decisionCache[symbol] = &decisionCacheEntry{
+		decision: decision,
+		expireAt: time.Now().Add(ttl),
 	}
 }
 

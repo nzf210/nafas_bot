@@ -26,7 +26,7 @@ import (
 //   - *Config: pointer ke struct Config berisi semua konfigurasi
 //   - error: error jika konfigurasi wajib tidak ditemukan
 func Load() (*Config, error) {
-	c := &Config{}
+	c :=&Config{}
 
 	// App
 	c.AppEnv = getEnv("APP_ENV", "development")
@@ -73,23 +73,31 @@ func Load() (*Config, error) {
 	// Log
 	c.LogLevel = getEnv("LOG_LEVEL", "info")
 
-	// Trading defaults
-	c.DefaultMaxRiskPerTrade, _ = strconv.ParseFloat(getEnv("DEFAULT_MAX_RISK_PER_TRADE", "1.0"), 64)
-	c.DefaultMaxAllocationPerTrade, _ = strconv.ParseFloat(getEnv("DEFAULT_MAX_ALLOCATION_PER_TRADE", "10.0"), 64)
-	c.DefaultDailyLossLimit, _ = strconv.ParseFloat(getEnv("DEFAULT_DAILY_LOSS_LIMIT", "5.0"), 64)
-	c.DefaultMaxOpenPositions, _ = strconv.Atoi(getEnv("DEFAULT_MAX_OPEN_POSITIONS", "3"))
-	c.MaxPairsPerUser, _ = strconv.Atoi(getEnv("MAX_PAIRS_PER_USER", "100"))
-	
+	// Trading Mode - check if explicitly set via env
+	c.TradingMode = getEnv("TRADING_MODE", "moderate")
+
+	// Track which trading params are explicitly set via env
+	envOverrides := map[string]bool{
+		"DEFAULT_MAX_RISK_PER_TRADE":    os.Getenv("DEFAULT_MAX_RISK_PER_TRADE") != "",
+		"DEFAULT_MAX_ALLOCATION_PER_TRADE": os.Getenv("DEFAULT_MAX_ALLOCATION_PER_TRADE") != "",
+		"DEFAULT_DAILY_LOSS_LIMIT":      os.Getenv("DEFAULT_DAILY_LOSS_LIMIT") != "",
+		"DEFAULT_MAX_OPEN_POSITIONS":   os.Getenv("DEFAULT_MAX_OPEN_POSITIONS") != "",
+		"MIN_CONFIDENCE_THRESHOLD":     os.Getenv("MIN_CONFIDENCE_THRESHOLD") != "",
+		"MAX_RISK_LEVEL":                os.Getenv("MAX_RISK_LEVEL") != "",
+		"MIN_VOLATILITY_PERCENT":       os.Getenv("MIN_VOLATILITY_PERCENT") != "",
+		"MIN_VOLUME_24H":               os.Getenv("MIN_VOLUME_24H") != "",
+	}
+
+	// Apply preset first (default values)
+	if preset, ok := GetPreset(c.TradingMode); ok {
+		c.ApplyPreset(preset, envOverrides)
+	}
+
 	// Scanner properties
 	c.ScannerCycleInterval, _ = time.ParseDuration(getEnv("SCANNER_CYCLE_INTERVAL", "7m"))
 
-	// AI Trading Thresholds
-	c.MinConfidenceThreshold, _ = strconv.ParseFloat(getEnv("MIN_CONFIDENCE_THRESHOLD", "85"), 64)
-	c.MaxRiskLevel = getEnv("MAX_RISK_LEVEL", "low")
-
-	// Pre-AI Filters
-	c.MinVolatilityPercent, _ = strconv.ParseFloat(getEnv("MIN_VOLATILITY_PERCENT", "0.5"), 64)
-	c.MinVolume24h, _ = strconv.ParseFloat(getEnv("MIN_VOLUME_24H", "100000"), 64)
+	// Max pairs per user
+	c.MaxPairsPerUser, _ = strconv.Atoi(getEnv("MAX_PAIRS_PER_USER", "100"))
 
 	return c, nil
 }
@@ -141,7 +149,7 @@ type Config struct {
 	DefaultDailyLossLimit        float64
 	DefaultMaxOpenPositions      int
 	MaxPairsPerUser              int
-	
+
 	// Scanner properties
 	ScannerCycleInterval time.Duration
 
@@ -152,6 +160,108 @@ type Config struct {
 	// Pre-AI Filters
 	MinVolatilityPercent float64
 	MinVolume24h         float64
+
+	// Trading Mode Preset
+	TradingMode string // "conservative", "moderate", "aggressive"
+}
+
+// TradingModePreset defines preset configurations for different trading modes
+type TradingModePreset struct {
+	Name                     string
+	DefaultMaxRiskPerTrade  float64
+	DefaultMaxAllocationPerTrade float64
+	DefaultDailyLossLimit   float64
+	DefaultMaxOpenPositions int
+	MinConfidenceThreshold  float64
+	MaxRiskLevel            string
+	MinVolatilityPercent    float64
+	MinVolume24h            float64
+}
+
+// PresetConfigs contains all available trading mode presets
+var PresetConfigs = map[string]TradingModePreset{
+	"conservative": {
+		Name:                     "conservative",
+		DefaultMaxRiskPerTrade:   0.5, // 0.5% risk per trade
+		DefaultMaxAllocationPerTrade: 5.0,       // 5% max allocation
+		DefaultDailyLossLimit:   3.0,           // 3% daily loss limit
+		DefaultMaxOpenPositions: 2, // Max 2 open positions
+		MinConfidenceThreshold:  90,            // High confidence required
+		MaxRiskLevel:            "low",          // Only low risk
+		MinVolatilityPercent:    1.0,           // Only volatile coins
+		MinVolume24h:            500000, // High volume requirement
+	},
+	"moderate": {
+		Name:                     "moderate",
+		DefaultMaxRiskPerTrade:   1.0,           // 1% risk per trade
+		DefaultMaxAllocationPerTrade: 10.0,      // 10% max allocation
+		DefaultDailyLossLimit:   5.0,           // 5% daily loss limit
+		DefaultMaxOpenPositions: 3,             // Max 3 open positions
+		MinConfidenceThreshold:  85,            // Standard confidence
+		MaxRiskLevel:            "medium",      // Allow medium risk
+		MinVolatilityPercent:    0.5,           // Standard volatility
+		MinVolume24h:            100000,        // Standard volume
+	},
+	"aggressive": {
+		Name:                     "aggressive",
+		DefaultMaxRiskPerTrade:   2.0,           // 2% risk per trade
+		DefaultMaxAllocationPerTrade: 20.0,      // 20% max allocation
+		DefaultDailyLossLimit:   8.0,           // 8% daily loss limit
+		DefaultMaxOpenPositions: 5,             // Max 5 open positions
+		MinConfidenceThreshold:  70,            // Lower confidence threshold
+		MaxRiskLevel:            "high",        // Allow high risk
+		MinVolatilityPercent:    0.2,           // Lower volatility filter
+		MinVolume24h:            50000,         // Lower volume requirement
+	},
+}
+
+// GetPreset returns the preset configuration for the given mode
+// Nama Function: GetPreset
+// Deskripsi: Mengambil preset configuration berdasarkan mode trading.
+// Parameter/Value Input:
+//   - mode: string — mode trading ("conservative", "moderate", "aggressive")
+// Output/Return Value:
+//   - TradingModePreset: preset configuration
+//   - bool: true jika preset ditemukan, false jika tidak
+func GetPreset(mode string) (TradingModePreset, bool) {
+	preset, ok := PresetConfigs[mode]
+	return preset, ok
+}
+
+// ApplyPreset applies preset values to Config (only if not explicitly set via env)
+// Nama Function: ApplyPreset
+// Deskripsi: Mengaplikasikan preset values ke Config.
+// Hanya mengaplikasikan jika environment variable belum di-set.
+// Parameter/Value Input:
+//   - preset: TradingModePreset — preset yang akan di-applied
+//   - envOverrides: map[string]bool — map yang menandakan env var sudah di-set
+// Output/Return Value:
+//   - Tidak ada return value, modify Config in-place
+func (c *Config) ApplyPreset(preset TradingModePreset, envOverrides map[string]bool) {
+	if !envOverrides["DEFAULT_MAX_RISK_PER_TRADE"] {
+		c.DefaultMaxRiskPerTrade = preset.DefaultMaxRiskPerTrade
+	}
+	if !envOverrides["DEFAULT_MAX_ALLOCATION_PER_TRADE"] {
+		c.DefaultMaxAllocationPerTrade = preset.DefaultMaxAllocationPerTrade
+	}
+	if !envOverrides["DEFAULT_DAILY_LOSS_LIMIT"] {
+		c.DefaultDailyLossLimit = preset.DefaultDailyLossLimit
+	}
+	if !envOverrides["DEFAULT_MAX_OPEN_POSITIONS"] {
+		c.DefaultMaxOpenPositions = preset.DefaultMaxOpenPositions
+	}
+	if !envOverrides["MIN_CONFIDENCE_THRESHOLD"] {
+		c.MinConfidenceThreshold = preset.MinConfidenceThreshold
+	}
+	if !envOverrides["MAX_RISK_LEVEL"] {
+		c.MaxRiskLevel = preset.MaxRiskLevel
+	}
+	if !envOverrides["MIN_VOLATILITY_PERCENT"] {
+		c.MinVolatilityPercent = preset.MinVolatilityPercent
+	}
+	if !envOverrides["MIN_VOLUME_24H"] {
+		c.MinVolume24h = preset.MinVolume24h
+	}
 }
 
 // DSN returns PostgreSQL connection string
