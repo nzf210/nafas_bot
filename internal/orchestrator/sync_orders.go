@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/nzf210/nafas-bot/internal/execution"
 	"github.com/nzf210/nafas-bot/internal/models"
 	"github.com/shopspring/decimal"
 )
@@ -29,7 +30,7 @@ func (o *Orchestrator) SyncPendingOrders(ctx context.Context) {
 
 	// Get all orders that need sync (include order_type for OCO logic)
 	rows, err := o.db.QueryContext(ctx, `
-		SELECT id, user_id, exchange, exchange_order_id, symbol, order_type
+		SELECT id, user_id, exchange, exchange_order_id, symbol, order_type, UPPER(side)
 		FROM orders 
 		WHERE status IN ('pending', 'submitted', 'partial')
 		AND exchange_order_id IS NOT NULL
@@ -47,11 +48,12 @@ func (o *Orchestrator) SyncPendingOrders(ctx context.Context) {
 		ExchangeOrderID string
 		Symbol          string
 		OrderType       string
+		Side            string
 	}
 	var orders []pendingOrder
 	for rows.Next() {
 		var po pendingOrder
-		if err := rows.Scan(&po.ID, &po.UserID, &po.Exchange, &po.ExchangeOrderID, &po.Symbol, &po.OrderType); err != nil {
+		if err := rows.Scan(&po.ID, &po.UserID, &po.Exchange, &po.ExchangeOrderID, &po.Symbol, &po.OrderType, &po.Side); err != nil {
 			o.logger.WithError(err).Warn("Failed to scan pending order row")
 			continue
 		}
@@ -76,8 +78,9 @@ func (o *Orchestrator) SyncPendingOrders(ctx context.Context) {
 			continue
 		}
 
-		// Sync with exchange
-		updatedOrder, err := o.exchange.GetOrderStatus(ctx, userCtx.APIKey, userCtx.APISecret, order.ExchangeOrderID, order.Symbol)
+		// Sync with exchange using per-user exchange client (multi-exchange support)
+		userExch := o.getUserExchange(order.UserID.String(), userCtx.Exchange)
+		updatedOrder, err := userExch.GetOrderStatus(ctx, userCtx.APIKey, userCtx.APISecret, order.ExchangeOrderID, order.Symbol)
 		if err != nil {
 			o.logger.WithError(err).WithField("order_id", order.ID).Warn("Failed to fetch order status from exchange")
 			continue
@@ -114,6 +117,20 @@ func (o *Orchestrator) SyncPendingOrders(ctx context.Context) {
 					Symbol:    order.Symbol,
 					OrderType: order.OrderType,
 				})
+			}
+
+			// P&L TRACKING: Record realized P&L when a SELL order fills
+			if updatedOrder.Status == "filled" && order.Side == "SELL" {
+				go func(ord pendingOrder, filled *models.Order) {
+					pnlCtx, pnlCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer pnlCancel()
+					pnlTracker := execution.NewPnLTracker(o.db)
+					_, pnlErr := pnlTracker.RecordClosedPosition(pnlCtx, ord.UserID, filled)
+					if pnlErr != nil {
+						o.logger.WithError(pnlErr).WithField("symbol", ord.Symbol).
+							Warn("PNL: Failed to record P&L for filled SELL order")
+					}
+				}(order, updatedOrder)
 			}
 		}
 	}
@@ -190,11 +207,12 @@ func (o *Orchestrator) cancelCounterpartOrders(ctx context.Context, filled []fil
 			continue
 		}
 
-		// Cancel each counterpart
+		// Cancel each counterpart using per-user exchange client (multi-exchange support)
 		type orderCanceller interface {
 			CancelOrder(ctx context.Context, apiKey, apiSecret, orderID, symbol string) error
 		}
-		canceller, ok := o.exchange.(orderCanceller)
+		userExch := o.getUserExchange(f.UserID.String(), userCtx.Exchange)
+		canceller, ok := userExch.(orderCanceller)
 		if !ok {
 			// Exchange doesn't support cancel — just mark cancelled in DB
 			for _, co := range counters {

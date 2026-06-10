@@ -18,6 +18,7 @@ import (
 	"github.com/nzf210/nafas-bot/internal/config"
 	"github.com/nzf210/nafas-bot/internal/exchange"
 	"github.com/nzf210/nafas-bot/internal/execution"
+	"github.com/nzf210/nafas-bot/internal/learning"
 	"github.com/nzf210/nafas-bot/internal/logger"
 	"github.com/nzf210/nafas-bot/internal/models"
 	"github.com/nzf210/nafas-bot/internal/risk"
@@ -63,16 +64,18 @@ type decisionCacheEntry struct {
 // Output/Return Value:
 //   - Orchestrator: struct orchestration service
 type Orchestrator struct {
-	db          *sql.DB
-	exchange    exchange.Exchange
-	scanner     *scanner.Scanner
-	ai          ai.AIClient
-	engine      *strategy.StrategyEngine
-	logger      *logger.Logger
-	stopCh      chan struct{}
-	wg          sync.WaitGroup
-	config      *config.Config
-	pairManager *scanner.PairManager
+	db              *sql.DB
+	exchange        exchange.Exchange
+	exchangeFactory *exchange.ExchangeFactory
+	scanner         *scanner.Scanner
+	ai              ai.AIClient
+	engine          *strategy.StrategyEngine
+	logger          *logger.Logger
+	stopCh          chan struct{}
+	wg              sync.WaitGroup
+	config          *config.Config
+	pairManager     *scanner.PairManager
+	learning        *learning.Service
 
 	// AI decision cache — 1 LLM call per unique symbol (bukan per user)
 	decisionCache   map[string]*decisionCacheEntry
@@ -81,33 +84,37 @@ type Orchestrator struct {
 
 // NewOrchestrator creates a new multi-account orchestrator
 // Nama Function: NewOrchestrator
-// Deskripsi: Membuat instance orchestrator baru.
+// Deskripsi: Membuat instance orchestrator baru dengan dukungan multi-exchange.
 // Parameter/Value Input:
 //   - db: *sql.DB — koneksi database
-//   - exch: exchange.Exchange — exchange client
+//   - exch: exchange.Exchange — exchange client default (Binance, untuk market data)
 //   - scan: *scanner.Scanner — market scanner
 //   - taClient: ai.AIClient — AI decision client
 //   - eng: *strategy.StrategyEngine — strategy engine
 //   - cfg: *config.Config — application configuration
 //   - pm: *scanner.PairManager — pair manager untuk sync user pairs ke scanner
+//   - exchangeFactory: *exchange.ExchangeFactory — factory untuk per-user exchange client
+//   - learningService: *learning.Service — service untuk AI learning
 //
 // Function yang Dipanggil/Dikonsumsi:
 //   - Tidak ada function langsung, hanya inisialisasi
 //
 // Output/Return Value:
 //   - *Orchestrator: pointer ke orchestrator instance
-func NewOrchestrator(db *sql.DB, exch exchange.Exchange, scan *scanner.Scanner, taClient ai.AIClient, eng *strategy.StrategyEngine, cfg *config.Config, pm *scanner.PairManager) *Orchestrator {
+func NewOrchestrator(db *sql.DB, exch exchange.Exchange, scan *scanner.Scanner, taClient ai.AIClient, eng *strategy.StrategyEngine, cfg *config.Config, pm *scanner.PairManager, exchangeFactory *exchange.ExchangeFactory, learningService *learning.Service) *Orchestrator {
 	return &Orchestrator{
-		db:            db,
-		exchange:      exch,
-		scanner:       scan,
-		ai:            taClient,
-		engine:        eng,
-		logger:        logger.Default().WithField("module", "orchestrator"),
-		stopCh:        make(chan struct{}),
-		config:        cfg,
-		pairManager:   pm,
-		decisionCache: make(map[string]*decisionCacheEntry),
+		db:              db,
+		exchange:        exch,
+		exchangeFactory: exchangeFactory,
+		scanner:         scan,
+		ai:              taClient,
+		engine:          eng,
+		logger:          logger.Default().WithField("module", "orchestrator"),
+		stopCh:          make(chan struct{}),
+		config:          cfg,
+		pairManager:     pm,
+		learning:        learningService,
+		decisionCache:   make(map[string]*decisionCacheEntry),
 	}
 }
 
@@ -714,9 +721,12 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 	userLogger = userLogger.WithField("exchange", userCtx.Exchange)
 	userLogger.Info("Processing user trading cycle")
 
+	// Resolve the correct exchange client for this user (multi-exchange support)
+	userExchange := o.getUserExchange(user.ID.String(), userCtx.Exchange)
+
 	// Get base capital balance (BTC)
 	var portfolioValue decimal.Decimal
-	balances, err := o.exchange.GetBalances(ctx, userCtx.APIKey, userCtx.APISecret)
+	balances, err := userExchange.GetBalances(ctx, userCtx.APIKey, userCtx.APISecret)
 	if err == nil {
 		if btcBal, ok := balances["BTC"]; ok {
 			portfolioValue = btcBal
@@ -790,6 +800,21 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 
 			pairLogger.Info("AI trade recommendation accepted, proceeding to Risk Guardian/Executor")
 
+			// ============================================================
+			// DUPLICATE ORDER PREVENTION: Check for existing open position
+			// ============================================================
+			dedupChecker := execution.NewDuplicateChecker(o.db)
+			isDuplicate, dedupReason, dedupErr := dedupChecker.IsDuplicate(ctx, user.ID, p.Symbol, decision.TradeDecision)
+			if dedupErr != nil {
+				pairLogger.WithError(dedupErr).Warn("DEDUP: Check failed, allowing order")
+			} else if isDuplicate {
+				pairLogger.WithField("reason", dedupReason).
+					WithField("symbol", p.Symbol).
+					WithField("side", decision.TradeDecision).
+					Info("DEDUP: Duplicate order blocked")
+				return
+			}
+
 			// Build order for risk check
 			order := &models.Order{
 				UserID:    user.ID,
@@ -860,7 +885,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			type lotSizeFixer interface {
 				FixQuantity(symbol string, qty decimal.Decimal) decimal.Decimal
 			}
-			if fixer, ok := o.exchange.(lotSizeFixer); ok {
+			if fixer, ok := userExchange.(lotSizeFixer); ok {
 				positionSizeBase = fixer.FixQuantity(p.Symbol, positionSizeBase)
 			}
 
@@ -887,7 +912,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 						Debug("SELL quantity capped to user's base asset balance")
 				}
 				// Re-apply LOT_SIZE after capping
-				if fixer, ok := o.exchange.(lotSizeFixer); ok {
+				if fixer, ok := userExchange.(lotSizeFixer); ok {
 					positionSizeBase = fixer.FixQuantity(p.Symbol, positionSizeBase)
 				}
 				if positionSizeBase.LessThanOrEqual(decimal.Zero) {
@@ -907,7 +932,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			type minNotionalGetter interface {
 				GetMinNotional(symbol string) decimal.Decimal
 			}
-			if getter, ok := o.exchange.(minNotionalGetter); ok {
+			if getter, ok := userExchange.(minNotionalGetter); ok {
 				minNotional = getter.GetMinNotional(p.Symbol)
 			}
 
@@ -977,7 +1002,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 				WithField("confidence", decision.Confidence.String()).
 				Info("EXECUTING ORDER: Starting order execution")
 
-			executor := execution.NewExecutor(o.db, o.exchange)
+			executor := execution.NewExecutor(o.db, userExchange)
 			result, err := executor.ExecuteMarket(ctx, user.ID, plan, userCtx.APIKey, userCtx.APISecret)
 			if err != nil {
 				pairLogger.WithError(err).
@@ -995,6 +1020,13 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 				WithField("execution_price", result.ExecutionPrice.String()).
 				WithField("exchange_order_id", result.Order.ExchangeOrderID).
 				Info("EXECUTION SUCCESS: Order executed successfully")
+
+			// ============================================================
+			// LEARNING FEEDBACK LOOP: Connect execution result to learning
+			// ============================================================
+			if o.learning != nil && result != nil && result.Order != nil {
+				go o.recordLearningFeedback(ctx, user.ID, result.Order, decision)
+			}
 		}(pair)
 	}
 	wgPair.Wait()
@@ -1095,4 +1127,147 @@ func (o *Orchestrator) logAIDecision(ctx context.Context, user *models.User, sym
 	if err != nil {
 		o.logger.WithError(err).Warn("Failed to log AI decision")
 	}
+}
+
+// getUserExchange returns the correct exchange client for a user based on their API key exchange.
+// Nama Function: getUserExchange
+// Deskripsi: Mengambil exchange client yang sesuai untuk user berdasarkan exchange yang dikonfigurasi.
+//
+//	Jika factory tersedia dan user memiliki exchange non-default (misal OKX), akan menggunakan
+//	per-user exchange client. Fallback ke exchange default (Binance) jika factory tidak tersedia
+//	atau terjadi error saat membuat client.
+//
+// Parameter/Value Input:
+//   - userID: string — user ID untuk cache key di factory
+//   - exchangeName: string — nama exchange dari UserContext ("binance", "okx")
+//
+// Function yang Dipanggil/Dikonsumsi:
+//   - exchangeFactory.GetExchange: dipanggil untuk ambil exchange client per user
+//
+// Output/Return Value:
+//   - exchange.Exchange: exchange client yang sesuai untuk user ini
+func (o *Orchestrator) getUserExchange(userID, exchangeName string) exchange.Exchange {
+	if o.exchangeFactory != nil && exchangeName != "" {
+		client, err := o.exchangeFactory.GetExchange(userID, exchangeName)
+		if err != nil {
+			o.logger.WithField("user_id", userID).
+				WithField("exchange", exchangeName).
+				WithError(err).
+				Warn("MULTI-EXCHANGE: Failed to get user exchange, falling back to default")
+			return o.exchange
+		}
+		o.logger.WithField("user_id", userID).
+			WithField("exchange", exchangeName).
+			Debug("MULTI-EXCHANGE: Using user-specific exchange client")
+		return client
+	}
+	return o.exchange
+}
+
+// recordLearningFeedback records the execution result into the learning service.
+// Nama Function: recordLearningFeedback
+// Deskripsi: Menghubungkan hasil eksekusi ke learning service untuk feedback loop.
+//
+//	Mengambil BTC balance sebelum dan sesudah trade untuk menghitung delta P&L.
+//	Dijalankan sebagai goroutine terpisah agar tidak memblokir eksekusi utama.
+//
+// Parameter/Value Input:
+//
+//	- ctx: context.Context — context untuk operasi
+//	- userID: models.UUID — user ID
+//	- order: *models.Order — order yang sudah dieksekusi
+//	- decision: *ai.CoordinatorDecision — AI decision yang menghasilkan order ini
+//
+// Function yang Dipanggil/Dikonsumsi:
+//
+//	- learning.LogFeedback: dipanggil untuk store feedback ke DB
+//
+// Output/Return Value:
+//
+//	- Tidak ada return value (goroutine)
+func (o *Orchestrator) recordLearningFeedback(ctx context.Context, userID models.UUID, order *models.Order, decision *ai.CoordinatorDecision) {
+	if o.learning == nil || order == nil {
+		return
+	}
+
+	// Use a short-lived context for the feedback recording
+	feedbackCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Determine success: BUY is always considered pending success.
+	// SELL filled = position closed, compute whether it was profitable.
+	isSuccess := false
+	var btcBefore, btcAfter decimal.Decimal
+
+	switch order.Side {
+	case "BUY":
+		// BUY execution itself is "neutral" — log as pending
+		// We track SELL completions for the actual outcome
+		isSuccess = true // optimistic: assume BUY opens a good position
+		btcBefore = order.Price.Mul(order.ExecutedQuantity)
+		btcAfter = btcBefore // no change yet for BUY
+	case "SELL":
+		// For SELL: compute P&L from DB
+		entryValue := order.Price.Mul(order.ExecutedQuantity)
+		// Find avg buy price from DB
+		var avgBuyPrice decimal.Decimal
+		err := o.db.QueryRowContext(feedbackCtx, `
+			SELECT COALESCE(
+				SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0),
+				0
+			)
+			FROM orders
+			WHERE user_id = $1 AND symbol = $2
+			  AND UPPER(side) = 'BUY' AND UPPER(status) = 'FILLED'
+		`, userID, order.Symbol).Scan(&avgBuyPrice)
+		if err != nil || avgBuyPrice.LessThanOrEqual(decimal.Zero) {
+			o.logger.WithField("symbol", order.Symbol).Debug("LEARN: Cannot compute P&L for feedback (no buy price)")
+			return
+		}
+
+		btcBefore = avgBuyPrice.Mul(order.ExecutedQuantity)
+		btcAfter = entryValue
+		isSuccess = entryValue.GreaterThan(btcBefore)
+	default:
+		return
+	}
+
+	// Find the most recent AI decision ID for this symbol from DB
+	// (linked to this execution)
+	var decisionID models.UUID
+	err := o.db.QueryRowContext(feedbackCtx, `
+		SELECT id FROM ai_decisions
+		WHERE symbol = $1 AND decision = $2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, order.Symbol, order.Side).Scan(&decisionID)
+	if err != nil {
+		// No decision ID found — log memory directly without linking to a decision
+		o.logger.WithField("symbol", order.Symbol).Debug("LEARN: No AI decision found for feedback linking")
+		// Still store as general memory
+		pnl := btcAfter.Sub(btcBefore)
+		o.learning.StoreMemory(feedbackCtx, "trade_outcome",
+			fmt.Sprintf("Trade %s %s: P&L=%s, success=%v", order.Side, order.Symbol, pnl.StringFixed(8), isSuccess),
+			0.6,
+			map[string]interface{}{
+				"symbol":  order.Symbol,
+				"side":    order.Side,
+				"pnl":     pnl.String(),
+				"success": isSuccess,
+			},
+		)
+		return
+	}
+
+	// Log structured feedback
+	_, err = o.learning.LogFeedback(feedbackCtx, decisionID, btcBefore, btcAfter, isSuccess)
+	if err != nil {
+		o.logger.WithError(err).WithField("symbol", order.Symbol).Warn("LEARN: Failed to log execution feedback")
+		return
+	}
+
+	o.logger.WithField("symbol", order.Symbol).
+		WithField("side", order.Side).
+		WithField("success", isSuccess).
+		Info("LEARN: Execution feedback recorded to learning service")
 }

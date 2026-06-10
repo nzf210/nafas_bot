@@ -99,6 +99,24 @@ func main() {
 		{"ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS max_allocation_per_trade DECIMAL(18,8) DEFAULT 10.00;", "add max_allocation_per_trade column to user_configs", false},
 		// Seed AI provider "Direct LLM" jika belum ada
 		{`INSERT INTO ai_providers (id, name, provider, model, is_active) VALUES ('00000000-0000-0000-0000-000000000001', 'Direct LLM', 'openai', 'gpt-4o', true) ON CONFLICT DO NOTHING;`, "seed ai_providers (Direct LLM)", false},
+		// Realized P&L tracking table
+		{`CREATE TABLE IF NOT EXISTS realized_pnl (
+			id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+			user_id         UUID NOT NULL,
+			symbol          VARCHAR(20) NOT NULL,
+			buy_order_id    UUID NOT NULL,
+			sell_order_id   UUID NOT NULL,
+			entry_price     DECIMAL(30,10) NOT NULL,
+			exit_price      DECIMAL(30,10) NOT NULL,
+			quantity        DECIMAL(30,10) NOT NULL,
+			gross_pnl       DECIMAL(30,10) NOT NULL,
+			net_pnl         DECIMAL(30,10) NOT NULL,
+			pnl_percent     DECIMAL(10,4) NOT NULL,
+			is_profit       BOOLEAN NOT NULL DEFAULT false,
+			closed_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`, "create realized_pnl table", false},
+		{`CREATE UNIQUE INDEX IF NOT EXISTS idx_realized_pnl_sell_order ON realized_pnl (sell_order_id)`, "add unique index on realized_pnl.sell_order_id", false},
+		{`CREATE INDEX IF NOT EXISTS idx_realized_pnl_user_closed ON realized_pnl (user_id, closed_at DESC)`, "add index on realized_pnl (user_id, closed_at)", false},
 	}
 	for _, m := range autoMigrateQueries {
 		if _, err := db.Exec(m.sql); err != nil {
@@ -114,7 +132,7 @@ func main() {
 	// Initialize services
 	authService := auth.NewService(db)
 	_ = risk.NewGuardian()
-	_ = learning.NewService(db)
+	learningService := learning.NewService(db)
 	_ = strategy.NewStrategyEngine(db)
 
 	// Initialize exchange factory (supports multiple exchanges: Binance, OKX)
@@ -179,11 +197,17 @@ func main() {
 
 	// Initialize Multi-Account Orchestrator
 	var tradingOrchestrator *orchestrator.Orchestrator
+	var sltpMonitor *orchestrator.SLTPMonitor
 	if cfg.LLMAPIKey != "" || cfg.LLMBaseURL != "" {
 		strategyEngine := strategy.NewStrategyEngine(db)
-		tradingOrchestrator = orchestrator.NewOrchestrator(db, binanceClient, marketScanner, taClient, strategyEngine, cfg, pairManager)
+		tradingOrchestrator = orchestrator.NewOrchestrator(db, binanceClient, marketScanner, taClient, strategyEngine, cfg, pairManager, exchangeFactory, learningService)
 		tradingOrchestrator.Start(context.Background())
 		logg.Info("Multi-account trading orchestrator started")
+
+		// Start SL/TP monitoring service (background job, 30s interval)
+		sltpMonitor = orchestrator.NewSLTPMonitor(tradingOrchestrator, 30*time.Second)
+		sltpMonitor.Start(context.Background())
+		logg.Info("SL/TP monitoring service started (30s interval)")
 	}
 
 	// Initialize Telegram Bot with full dependencies
@@ -252,6 +276,11 @@ func main() {
 	// Stop Telegram bot workers gracefully
 	if telegramBot != nil {
 		telegramBot.Stop()
+	}
+
+	// Stop SL/TP monitor
+	if sltpMonitor != nil {
+		sltpMonitor.Stop()
 	}
 
 	// Stop trading orchestrator
