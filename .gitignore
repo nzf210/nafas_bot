@@ -64,13 +64,13 @@ ENV/
 # Logs
 *.log
 server.log
-
+*.bin
 # Archives
 *.zip
 *.tar
 *.tar.gz
 *.rar
-
+nafas_bot
 # Docker
 .docker/
 

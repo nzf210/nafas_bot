@@ -1189,7 +1189,8 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 			for _, symbol := range symbolFormats {
 				// Query avg price from orders (case-insensitive)
 				err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND LOWER(symbol) = LOWER($2) AND UPPER(side) = 'BUY' AND UPPER(status) = 'FILLED'", user.ID, symbol).Scan(&avgPrice)
-				if err == nil && avgPrice != "" && avgPrice != "0" {
+				avgPriceDec, _ := decimal.NewFromString(avgPrice)
+				if err == nil && avgPrice != "" && avgPriceDec.GreaterThan(decimal.Zero) {
 					foundSymbol = symbol
 					break
 				}
@@ -1203,14 +1204,21 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 					if err == nil && currentPrice.GreaterThan(decimal.Zero) {
 						// Calculate P/L percentage: (currentPrice - avgPrice) / avgPrice * 100
 						priceDiff := currentPrice.Sub(avgPriceDec)
+						floating := priceDiff.Mul(balDec)
 						percent := priceDiff.Div(avgPriceDec).Mul(decimal.NewFromInt(100))
 						sign := "+"
 						if percent.LessThan(decimal.Zero) {
 							sign = ""
 						}
-						floatingStr = fmt.Sprintf(" (P/L: %s%.2f%%)", sign, percent.InexactFloat64())
+						floatingStr = fmt.Sprintf(" (Float: %s%s %s | %s%.2f%%)", sign, floating.Round(6).String(), quoteUpper, sign, percent.InexactFloat64())
+					} else {
+						floatingStr = " (Float: N/A)"
 					}
+				} else {
+					floatingStr = " (Float: N/A)"
 				}
+			} else {
+				floatingStr = " (Float: N/A)"
 			}
 		}
 
