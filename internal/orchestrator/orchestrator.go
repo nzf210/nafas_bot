@@ -644,10 +644,13 @@ func calculateTrend(candles []models.MarketCandle) decimal.Decimal {
 // getAdaptiveTTL returns TTL based on confidence level.
 // Nama Function: getAdaptiveTTL
 // Deskripsi: Mengembalikan TTL cache berdasarkan confidence AI decision.
-//   Higher confidence → cache lebih lama (mengurangi LLM calls).
-//   Low confidence → refresh lebih sering agar keputusan di-update.
+//
+//	Higher confidence → cache lebih lama (mengurangi LLM calls).
+//	Low confidence → refresh lebih sering agar keputusan di-update.
+//
 // Parameter/Value Input:
 //   - confidence: decimal.Decimal — confidence score (0-100) dari AI decision
+//
 // Output/Return Value:
 //   - time.Duration: TTL untuk cache entry
 func getAdaptiveTTL(confidence decimal.Decimal) time.Duration {
@@ -726,18 +729,18 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 
 	// Get base capital balance (BTC)
 	var portfolioValue decimal.Decimal
-	balances, err := userExchange.GetBalances(ctx, userCtx.APIKey, userCtx.APISecret)
+	balances, err := userExchange.GetBalances(ctx, userCtx.APIKey, userCtx.APISecret, userCtx.Passphrase)
 	if err == nil {
 		if btcBal, ok := balances["BTC"]; ok {
 			portfolioValue = btcBal
 			userLogger.WithField("btc_balance", portfolioValue).Debug("Fetched BTC balance for portfolio sizing")
 		} else {
-			portfolioValue = decimal.NewFromFloat(0.1) // fallback
-			userLogger.Warn("BTC balance not found, using fallback 0.1 BTC")
+			portfolioValue = decimal.Zero
+			userLogger.Warn("BTC balance not found, assuming 0 BTC")
 		}
 	} else {
-		userLogger.WithError(err).Warn("Failed to get exchange balances, using fallback 0.1 BTC")
-		portfolioValue = decimal.NewFromFloat(0.1)
+		userLogger.WithError(err).Warn("Failed to get exchange balances, skipping trade cycle")
+		return err
 	}
 
 	// Run AI analysis for each configured pair concurrently
@@ -951,19 +954,19 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			}
 
 			balanceCheck := CheckBalanceSufficiency(
-				availableForCheck,    // Available balance in quote terms
-				positionValueQuote,   // Position value in quote (BTC)
-				minNotional,          // MIN_NOTIONAL filter from Binance
+				availableForCheck,  // Available balance in quote terms
+				positionValueQuote, // Position value in quote (BTC)
+				minNotional,        // MIN_NOTIONAL filter from Binance
 			)
 
 			if !balanceCheck.Sufficient {
 				pairLogger.WithFields(map[string]any{
-					"symbol":            p.Symbol,
-					"available":         balanceCheck.Available.String(),
-					"required":          balanceCheck.Required.String(),
-					"deficit":           balanceCheck.Deficit.String(),
-					"min_notional_met":  balanceCheck.MinNotionalMet,
-					"reason":            balanceCheck.Reason,
+					"symbol":           p.Symbol,
+					"available":        balanceCheck.Available.String(),
+					"required":         balanceCheck.Required.String(),
+					"deficit":          balanceCheck.Deficit.String(),
+					"min_notional_met": balanceCheck.MinNotionalMet,
+					"reason":           balanceCheck.Reason,
 				}).Warn("BALANCE CHECK FAILED: Skipping order - insufficient balance or below min notional")
 				return
 			}
@@ -1003,7 +1006,7 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 				Info("EXECUTING ORDER: Starting order execution")
 
 			executor := execution.NewExecutor(o.db, userExchange)
-			result, err := executor.ExecuteMarket(ctx, user.ID, plan, userCtx.APIKey, userCtx.APISecret)
+			result, err := executor.ExecuteMarket(ctx, user.ID, plan, userCtx.APIKey, userCtx.APISecret, userCtx.Passphrase)
 			if err != nil {
 				pairLogger.WithError(err).
 					WithField("symbol", p.Symbol).
@@ -1037,11 +1040,14 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 // getOpenPositionsCount returns the number of open positions for a user.
 // Nama Function: getOpenPositionsCount
 // Deskripsi: Menghitung jumlah posisi terbuka user berdasarkan pending SL/TP orders.
-//   Posisi dianggap terbuka jika masih ada protective order (STOP_LOSS_LIMIT atau
-//   TAKE_PROFIT_LIMIT) yang belum terpicu.
+//
+//	Posisi dianggap terbuka jika masih ada protective order (STOP_LOSS_LIMIT atau
+//	TAKE_PROFIT_LIMIT) yang belum terpicu.
+//
 // Parameter/Value Input:
 //   - ctx: context.Context — context untuk database operation
 //   - userID: models.UUID — user ID
+//
 // Output/Return Value:
 //   - int: jumlah posisi terbuka (distinct symbols dengan protective orders pending)
 func (o *Orchestrator) getOpenPositionsCount(ctx context.Context, userID models.UUID) int {
@@ -1060,12 +1066,15 @@ func (o *Orchestrator) getOpenPositionsCount(ctx context.Context, userID models.
 // getDailyLoss computes the realized loss for today (negative P&L from SELL orders).
 // Nama Function: getDailyLoss
 // Deskripsi: Menghitung total kerugian yang direalisasi user hari ini.
-//   Dihitung dari SELL orders yang filled hari ini dimana harga jual lebih rendah dari
-//   harga rata-rata beli (artinya rugi). Return positive decimal = jumlah loss dalam
-//   quote currency. Digunakan oleh Risk Guardian untuk enforce DailyLossLimit.
+//
+//	Dihitung dari SELL orders yang filled hari ini dimana harga jual lebih rendah dari
+//	harga rata-rata beli (artinya rugi). Return positive decimal = jumlah loss dalam
+//	quote currency. Digunakan oleh Risk Guardian untuk enforce DailyLossLimit.
+//
 // Parameter/Value Input:
 //   - ctx: context.Context — context untuk database operation
 //   - userID: models.UUID — user ID
+//
 // Output/Return Value:
 //   - decimal.Decimal: total daily loss (positive = rugi, zero = belum ada loss hari ini)
 func (o *Orchestrator) getDailyLoss(ctx context.Context, userID models.UUID) decimal.Decimal {
@@ -1173,19 +1182,19 @@ func (o *Orchestrator) getUserExchange(userID, exchangeName string) exchange.Exc
 //
 // Parameter/Value Input:
 //
-//	- ctx: context.Context — context untuk operasi
-//	- userID: models.UUID — user ID
-//	- order: *models.Order — order yang sudah dieksekusi
-//	- decision: *ai.CoordinatorDecision — AI decision yang menghasilkan order ini
+//   - ctx: context.Context — context untuk operasi
+//   - userID: models.UUID — user ID
+//   - order: *models.Order — order yang sudah dieksekusi
+//   - decision: *ai.CoordinatorDecision — AI decision yang menghasilkan order ini
 //
 // Function yang Dipanggil/Dikonsumsi:
 //
-//	- learning.LogFeedback: dipanggil untuk store feedback ke DB
+//   - learning.LogFeedback: dipanggil untuk store feedback ke DB
 //
 // Output/Return Value:
 //
-//	- Tidak ada return value (goroutine)
-func (o *Orchestrator) recordLearningFeedback(ctx context.Context, userID models.UUID, order *models.Order, decision *ai.CoordinatorDecision) {
+//   - Tidak ada return value (goroutine)
+func (o *Orchestrator) recordLearningFeedback(ctx context.Context, userID models.UUID, order *models.Order, _ *ai.CoordinatorDecision) {
 	if o.learning == nil || order == nil {
 		return
 	}

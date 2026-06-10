@@ -131,7 +131,7 @@ type ExecutionResult struct {
 // Output/Return Value:
 //   - *ExecutionResult: hasil eksekusi dengan SL/TP orders
 //   - error: error jika eksekusi gagal
-func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan ExecutionPlan, apiKey, apiSecret string) (*ExecutionResult, error) {
+func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan ExecutionPlan, apiKey, apiSecret, passphrase string) (*ExecutionResult, error) {
 	e.logger.WithField("symbol", plan.Symbol).
 		WithField("side", plan.Side).
 		WithField("quantity", plan.Quantity.String()).
@@ -155,7 +155,7 @@ func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan E
 		WithField("order_id", order.ID.String()).
 		Debug("EXEC: Order created, sending to exchange")
 
-	filled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, order)
+	filled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, passphrase, order)
 	if err != nil {
 		e.logger.WithField("symbol", plan.Symbol).
 			WithField("order_id", order.ID.String()).
@@ -170,7 +170,7 @@ func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan E
 	monitorCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	monitoredOrder, err := e.monitorOrderUntilFilled(monitorCtx, filled, apiKey, apiSecret)
+	monitoredOrder, err := e.monitorOrderUntilFilled(monitorCtx, filled, apiKey, apiSecret, passphrase)
 	if err != nil {
 		e.logger.WithField("symbol", plan.Symbol).
 			WithField("order_id", order.ID.String()).
@@ -203,7 +203,7 @@ func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan E
 	// CREATE SL/TP ORDERS: Only if order is filled
 	// ============================================================
 	if monitoredOrder != nil && monitoredOrder.Status == "filled" {
-		e.createSLTPOrders(ctx, userID, monitoredOrder, plan, apiKey, apiSecret)
+		e.createSLTPOrders(ctx, userID, monitoredOrder, plan, apiKey, apiSecret, passphrase)
 	}
 
 	return result, nil
@@ -224,7 +224,7 @@ func (e *Executor) ExecuteMarket(ctx context.Context, userID models.UUID, plan E
 // Output/Return Value:
 //   - *models.Order: order dengan status final
 //   - error: error jika timeout atau gagal polling
-func (e *Executor) monitorOrderUntilFilled(ctx context.Context, order *models.Order, apiKey, apiSecret string) (*models.Order, error) {
+func (e *Executor) monitorOrderUntilFilled(ctx context.Context, order *models.Order, apiKey, apiSecret, passphrase string) (*models.Order, error) {
 	if order == nil || order.ExchangeOrderID == nil {
 		return order, nil
 	}
@@ -244,7 +244,7 @@ func (e *Executor) monitorOrderUntilFilled(ctx context.Context, order *models.Or
 				Warn("EXEC: Order monitoring timed out")
 			return order, ctx.Err()
 		case <-ticker.C:
-			updatedOrder, err := e.exchange.GetOrderStatus(ctx, apiKey, apiSecret, orderID, order.Symbol)
+			updatedOrder, err := e.exchange.GetOrderStatus(ctx, apiKey, apiSecret, passphrase, orderID, order.Symbol)
 			if err != nil {
 				e.logger.WithError(err).WithField("exchange_order_id", orderID).
 					Warn("EXEC: Failed to get order status, retrying...")
@@ -287,7 +287,7 @@ func (e *Executor) monitorOrderUntilFilled(ctx context.Context, order *models.Or
 // Output/Return Value:
 //   - Tidak ada return value langsung (orders di-log ke database)
 // Catatan: Jika SL/TP creation gagal, hanya log warning, tidak fail seluruh execution
-func (e *Executor) createSLTPOrders(ctx context.Context, userID models.UUID, entryOrder *models.Order, plan ExecutionPlan, apiKey, apiSecret string) {
+func (e *Executor) createSLTPOrders(ctx context.Context, userID models.UUID, entryOrder *models.Order, plan ExecutionPlan, apiKey, apiSecret, passphrase string) {
 	if entryOrder == nil || entryOrder.Price.LessThanOrEqual(decimal.Zero) {
 		e.logger.Warn("EXEC: Cannot create SL/TP - invalid entry price")
 		return
@@ -327,7 +327,7 @@ func (e *Executor) createSLTPOrders(ctx context.Context, userID models.UUID, ent
 			UpdatedAt: time.Now(),
 		}
 
-		slFilled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, slOrder)
+		slFilled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, passphrase, slOrder)
 		if err != nil {
 			e.logger.WithError(err).
 				WithField("symbol", symbol).
@@ -375,7 +375,7 @@ func (e *Executor) createSLTPOrders(ctx context.Context, userID models.UUID, ent
 			UpdatedAt: time.Now(),
 		}
 
-		tpFilled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, tpOrder)
+		tpFilled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, passphrase, tpOrder)
 		if err != nil {
 			e.logger.WithError(err).
 				WithField("symbol", symbol).
@@ -409,7 +409,7 @@ func (e *Executor) createSLTPOrders(ctx context.Context, userID models.UUID, ent
 // Output/Return Value:
 //   - *ExecutionResult: hasil eksekusi
 //   - error: error jika eksekusi gagal
-func (e *Executor) ExecuteLimit(ctx context.Context, userID models.UUID, plan ExecutionPlan, apiKey, apiSecret string) (*ExecutionResult, error) {
+func (e *Executor) ExecuteLimit(ctx context.Context, userID models.UUID, plan ExecutionPlan, apiKey, apiSecret, passphrase string) (*ExecutionResult, error) {
 	if plan.Price.IsZero() {
 		return nil, fmt.Errorf("limit order requires price")
 	}
@@ -430,7 +430,7 @@ func (e *Executor) ExecuteLimit(ctx context.Context, userID models.UUID, plan Ex
 		UpdatedAt: time.Now(),
 	}
 
-	filled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, order)
+	filled, err := e.exchange.PlaceOrder(ctx, apiKey, apiSecret, passphrase, order)
 	if err != nil {
 		e.logger.Errorf("Limit order failed: %v", err)
 		return &ExecutionResult{Order: &order, Error: err}, err
@@ -459,7 +459,7 @@ func (e *Executor) ExecuteLimit(ctx context.Context, userID models.UUID, plan Ex
 // Output/Return Value:
 //   - *ExecutionResult: hasil eksekusi dengan semua fills
 //   - error: error jika eksekusi gagal
-func (e *Executor) ExecuteTWAP(ctx context.Context, userID models.UUID, plan ExecutionPlan, apiKey, apiSecret string, duration, sliceInterval time.Duration) (*ExecutionResult, error) {
+func (e *Executor) ExecuteTWAP(ctx context.Context, userID models.UUID, plan ExecutionPlan, apiKey, apiSecret, passphrase string, duration, sliceInterval time.Duration) (*ExecutionResult, error) {
 	if plan.Quantity.IsZero() {
 		return nil, fmt.Errorf("TWAP order requires quantity")
 	}
@@ -493,7 +493,7 @@ func (e *Executor) ExecuteTWAP(ctx context.Context, userID models.UUID, plan Exe
 			Price:     currentPrice,
 		}
 
-		result, err := e.ExecuteLimit(ctx, userID, slicePlan, apiKey, apiSecret)
+		result, err := e.ExecuteLimit(ctx, userID, slicePlan, apiKey, apiSecret, passphrase)
 		if err != nil {
 			e.logger.Warnf("TWAP slice %d failed: %v", sliceNum, err)
 			return
@@ -555,7 +555,7 @@ func (e *Executor) ExecuteTWAP(ctx context.Context, userID models.UUID, plan Exe
 // Output/Return Value:
 //   - *models.Order: order final status
 //   - error: error jika monitoring gagal atau timeout
-func (e *Executor) MonitorOrder(ctx context.Context, orderID string, apiKey, apiSecret string, symbol string, timeout time.Duration) (*models.Order, error) {
+func (e *Executor) MonitorOrder(ctx context.Context, orderID string, apiKey, apiSecret, passphrase string, symbol string, timeout time.Duration) (*models.Order, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -567,7 +567,7 @@ func (e *Executor) MonitorOrder(ctx context.Context, orderID string, apiKey, api
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-ticker.C:
-			order, err := e.exchange.GetOrderStatus(ctx, apiKey, apiSecret, orderID, symbol)
+			order, err := e.exchange.GetOrderStatus(ctx, apiKey, apiSecret, passphrase, orderID, symbol)
 			if err != nil {
 				return nil, err
 			}

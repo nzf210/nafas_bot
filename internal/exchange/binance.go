@@ -100,9 +100,9 @@ func (c *BinanceClient) FixQuantity(symbol string, qty decimal.Decimal) decimal.
 //   - Interface dengan semua method exchange
 type Exchange interface {
 	GetName() string
-	GetBalances(ctx context.Context, apiKey, apiSecret string) (map[string]decimal.Decimal, error)
-	PlaceOrder(ctx context.Context, apiKey, apiSecret string, order models.Order) (*models.Order, error)
-	GetOrderStatus(ctx context.Context, apiKey, apiSecret string, orderID string, symbol string) (*models.Order, error)
+	GetBalances(ctx context.Context, apiKey, apiSecret, passphrase string) (map[string]decimal.Decimal, error)
+	PlaceOrder(ctx context.Context, apiKey, apiSecret, passphrase string, order models.Order) (*models.Order, error)
+	GetOrderStatus(ctx context.Context, apiKey, apiSecret, passphrase string, orderID string, symbol string) (*models.Order, error)
 	GetPrice(ctx context.Context, symbol string) (decimal.Decimal, error)
 	GetTicker(ctx context.Context, symbol string) (*models.MarketSnapshot, error)
 	GetCandles(ctx context.Context, symbol, interval string, limit int) ([]models.MarketCandle, error)
@@ -181,7 +181,7 @@ func (c *BinanceClient) GetName() string {
 // Output/Return Value:
 //   - map[string]decimal.Decimal: map asset ke balance
 //   - error: error jika request gagal
-func (c *BinanceClient) GetBalances(ctx context.Context, apiKey, apiSecret string) (map[string]decimal.Decimal, error) {
+func (c *BinanceClient) GetBalances(ctx context.Context, apiKey, apiSecret, passphrase string) (map[string]decimal.Decimal, error) {
 	timestamp := time.Now().UnixMilli()
 	params := fmt.Sprintf("timestamp=%d&recvWindow=5000", timestamp)
 
@@ -273,7 +273,7 @@ func (c *BinanceClient) validatePrecision(symbol string, qty decimal.Decimal) er
 	return nil
 }
 
-func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string, order models.Order) (*models.Order, error) {
+func (c *BinanceClient) PlaceOrder(ctx context.Context, apiKey, apiSecret, passphrase string, order models.Order) (*models.Order, error) {
 	timestamp := time.Now().UnixMilli()
 
 	qty := c.fixQuantity(order.Symbol, order.Quantity)
@@ -445,7 +445,7 @@ func (c *BinanceClient) GetMinNotional(symbol string) decimal.Decimal {
 // Output/Return Value:
 //   - *models.Order: order dengan status updated
 //   - error: error jika fetch gagal
-func (c *BinanceClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret string, orderID string, symbol string) (*models.Order, error) {
+func (c *BinanceClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret, passphrase string, orderID string, symbol string) (*models.Order, error) {
 	timestamp := time.Now().UnixMilli()
 	params := fmt.Sprintf("symbol=%s&orderId=%s&timestamp=%d&recvWindow=5000", symbol, orderID, timestamp)
 	signature := c.signRequest(params, apiSecret)

@@ -80,7 +80,7 @@ func (o *Orchestrator) SyncPendingOrders(ctx context.Context) {
 
 		// Sync with exchange using per-user exchange client (multi-exchange support)
 		userExch := o.getUserExchange(order.UserID.String(), userCtx.Exchange)
-		updatedOrder, err := userExch.GetOrderStatus(ctx, userCtx.APIKey, userCtx.APISecret, order.ExchangeOrderID, order.Symbol)
+		updatedOrder, err := userExch.GetOrderStatus(ctx, userCtx.APIKey, userCtx.APISecret, userCtx.Passphrase, order.ExchangeOrderID, order.Symbol)
 		if err != nil {
 			o.logger.WithError(err).WithField("order_id", order.ID).Warn("Failed to fetch order status from exchange")
 			continue
@@ -121,16 +121,14 @@ func (o *Orchestrator) SyncPendingOrders(ctx context.Context) {
 
 			// P&L TRACKING: Record realized P&L when a SELL order fills
 			if updatedOrder.Status == "filled" && order.Side == "SELL" {
-				go func(ord pendingOrder, filled *models.Order) {
-					pnlCtx, pnlCancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer pnlCancel()
-					pnlTracker := execution.NewPnLTracker(o.db)
-					_, pnlErr := pnlTracker.RecordClosedPosition(pnlCtx, ord.UserID, filled)
-					if pnlErr != nil {
-						o.logger.WithError(pnlErr).WithField("symbol", ord.Symbol).
-							Warn("PNL: Failed to record P&L for filled SELL order")
-					}
-				}(order, updatedOrder)
+				pnlCtx, pnlCancel := context.WithTimeout(ctx, 5*time.Second)
+				pnlTracker := execution.NewPnLTracker(o.db)
+				_, pnlErr := pnlTracker.RecordClosedPosition(pnlCtx, order.UserID, updatedOrder)
+				if pnlErr != nil {
+					o.logger.WithError(pnlErr).WithField("symbol", order.Symbol).
+						Warn("PNL: Failed to record P&L for filled SELL order")
+				}
+				pnlCancel()
 			}
 		}
 	}
@@ -209,7 +207,7 @@ func (o *Orchestrator) cancelCounterpartOrders(ctx context.Context, filled []fil
 
 		// Cancel each counterpart using per-user exchange client (multi-exchange support)
 		type orderCanceller interface {
-			CancelOrder(ctx context.Context, apiKey, apiSecret, orderID, symbol string) error
+			CancelOrder(ctx context.Context, apiKey, apiSecret, passphrase, orderID, symbol string) error
 		}
 		userExch := o.getUserExchange(f.UserID.String(), userCtx.Exchange)
 		canceller, ok := userExch.(orderCanceller)
@@ -222,7 +220,7 @@ func (o *Orchestrator) cancelCounterpartOrders(ctx context.Context, filled []fil
 		}
 
 		for _, co := range counters {
-			err := canceller.CancelOrder(ctx, userCtx.APIKey, userCtx.APISecret, co.ExchangeOrderID, f.Symbol)
+			err := canceller.CancelOrder(ctx, userCtx.APIKey, userCtx.APISecret, userCtx.Passphrase, co.ExchangeOrderID, f.Symbol)
 			if err != nil {
 				o.logger.WithError(err).WithField("order_id", co.ID).Warn("Failed to cancel counterpart order on exchange")
 			}

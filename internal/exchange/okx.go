@@ -1,7 +1,11 @@
 package exchange
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,6 +57,23 @@ func (c *OKXClient) GetName() string {
 	return "okx"
 }
 
+// signRequest generates OKX signature and adds headers
+func (c *OKXClient) signRequest(req *http.Request, apiKey, apiSecret, passphrase, body string) error {
+	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	message := timestamp + req.Method + req.URL.RequestURI() + body
+
+	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac.Write([]byte(message))
+	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	req.Header.Set("OK-ACCESS-KEY", apiKey)
+	req.Header.Set("OK-ACCESS-SIGN", signature)
+	req.Header.Set("OK-ACCESS-TIMESTAMP", timestamp)
+	req.Header.Set("OK-ACCESS-PASSPHRASE", passphrase)
+	req.Header.Set("Content-Type", "application/json")
+	return nil
+}
+
 // GetBalances fetches account balances from OKX
 // Nama Function: GetBalances
 // Deskripsi: Mengambil semua balance dari account OKX menggunakan API endpoint
@@ -68,10 +89,55 @@ func (c *OKXClient) GetName() string {
 //   - error: error jika request gagal
 //
 // Catatan: OKX butuh signature authentication untuk private endpoints
-func (c *OKXClient) GetBalances(ctx context.Context, apiKey, apiSecret string) (map[string]decimal.Decimal, error) {
-	// TODO: Implement OKX signature and balance fetching
-	// OKX uses timestamp + method + requestPath + body for signature
-	return nil, fmt.Errorf("OKX GetBalances: not implemented yet")
+func (c *OKXClient) GetBalances(ctx context.Context, apiKey, apiSecret, passphrase string) (map[string]decimal.Decimal, error) {
+	urlStr := fmt.Sprintf("%s/api/v5/account/balance", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := c.signRequest(req, apiKey, apiSecret, passphrase, ""); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("OKX GetBalances: HTTP %d - %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			Details []struct {
+				Ccy   string `json:"ccy"`
+				Avail string `json:"availBal"`
+			} `json:"details"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	if result.Code != "0" {
+		return nil, fmt.Errorf("OKX GetBalances API error: %s", result.Msg)
+	}
+
+	balances := make(map[string]decimal.Decimal)
+	if len(result.Data) > 0 {
+		for _, detail := range result.Data[0].Details {
+			bal, _ := decimal.NewFromString(detail.Avail)
+			balances[detail.Ccy] = bal
+		}
+	}
+	return balances, nil
 }
 
 // PlaceOrder places a new order on OKX
@@ -87,9 +153,80 @@ func (c *OKXClient) GetBalances(ctx context.Context, apiKey, apiSecret string) (
 // Output/Return Value:
 //   - *models.Order: order dengan filled data
 //   - error: error jika gagal
-func (c *OKXClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string, order models.Order) (*models.Order, error) {
-	// TODO: Implement OKX order placement with signature
-	return nil, fmt.Errorf("OKX PlaceOrder: not implemented yet")
+func (c *OKXClient) PlaceOrder(ctx context.Context, apiKey, apiSecret, passphrase string, order models.Order) (*models.Order, error) {
+	urlStr := fmt.Sprintf("%s/api/v5/trade/order", c.baseURL)
+	
+	side := strings.ToLower(order.Side)
+	
+	ordType := "limit"
+	if strings.Contains(strings.ToLower(order.OrderType), "market") {
+		ordType = "market"
+	}
+	
+	okxSymbol := c.convertSymbol(order.Symbol)
+	
+	reqBody := map[string]interface{}{
+		"instId":  okxSymbol,
+		"tdMode":  "cash",
+		"side":    side,
+		"ordType": ordType,
+		"sz":      order.Quantity.String(),
+	}
+	
+	if ordType == "limit" && !order.Price.IsZero() {
+		reqBody["px"] = order.Price.String()
+	}
+
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", urlStr, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := c.signRequest(req, apiKey, apiSecret, passphrase, string(bodyBytes)); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("OKX PlaceOrder: HTTP %d - %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			OrdId string `json:"ordId"`
+			SMsg  string `json:"sMsg"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	if result.Code != "0" {
+		return nil, fmt.Errorf("OKX PlaceOrder API error: %s", result.Msg)
+	}
+
+	if len(result.Data) == 0 {
+		return nil, fmt.Errorf("OKX PlaceOrder: empty data returned")
+	}
+
+	if result.Data[0].OrdId == "" {
+		return nil, fmt.Errorf("OKX PlaceOrder failed: %s", result.Data[0].SMsg)
+	}
+
+	order.ExchangeOrderID = &result.Data[0].OrdId
+	order.Status = "submitted"
+	return &order, nil
 }
 
 // GetOrderStatus gets order status from OKX
@@ -106,9 +243,123 @@ func (c *OKXClient) PlaceOrder(ctx context.Context, apiKey, apiSecret string, or
 // Output/Return Value:
 //   - *models.Order: order dengan status terbaru
 //   - error: error jika gagal
-func (c *OKXClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret string, orderID string, symbol string) (*models.Order, error) {
-	// TODO: Implement OKX order status
-	return nil, fmt.Errorf("OKX GetOrderStatus: not implemented yet")
+func (c *OKXClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret, passphrase string, orderID string, symbol string) (*models.Order, error) {
+	okxSymbol := c.convertSymbol(symbol)
+	urlStr := fmt.Sprintf("%s/api/v5/trade/order?instId=%s&ordId=%s", c.baseURL, okxSymbol, orderID)
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := c.signRequest(req, apiKey, apiSecret, passphrase, ""); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("OKX GetOrderStatus: HTTP %d - %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			State     string `json:"state"`
+			AvgPx     string `json:"avgPx"`
+			AccFillSz string `json:"accFillSz"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	if result.Code != "0" {
+		return nil, fmt.Errorf("OKX GetOrderStatus API error: %s", result.Msg)
+	}
+
+	if len(result.Data) == 0 {
+		return nil, fmt.Errorf("OKX GetOrderStatus: order not found")
+	}
+
+	data := result.Data[0]
+	
+	status := "pending"
+	switch data.State {
+	case "filled":
+		status = "filled"
+	case "canceled":
+		status = "cancelled"
+	case "partially_filled":
+		status = "partial"
+	case "live":
+		status = "pending"
+	}
+
+	avgPx, _ := decimal.NewFromString(data.AvgPx)
+	fillSz, _ := decimal.NewFromString(data.AccFillSz)
+
+	return &models.Order{
+		ExchangeOrderID:  &orderID,
+		Status:           status,
+		Price:            avgPx,
+		ExecutedQuantity: fillSz,
+		Symbol:           symbol,
+	}, nil
+}
+
+// CancelOrder cancels an existing order on OKX
+func (c *OKXClient) CancelOrder(ctx context.Context, apiKey, apiSecret, passphrase, orderID, symbol string) error {
+	urlStr := fmt.Sprintf("%s/api/v5/trade/cancel-order", c.baseURL)
+	okxSymbol := c.convertSymbol(symbol)
+
+	reqBody := map[string]interface{}{
+		"instId": okxSymbol,
+		"ordId":  orderID,
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", urlStr, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return err
+	}
+
+	if err := c.signRequest(req, apiKey, apiSecret, passphrase, string(bodyBytes)); err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("OKX CancelOrder HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+
+	if result.Code != "0" {
+		return fmt.Errorf("OKX CancelOrder API error: %s", result.Msg)
+	}
+
+	return nil
 }
 
 // GetPrice gets current price for a symbol

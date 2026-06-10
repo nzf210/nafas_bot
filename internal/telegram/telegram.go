@@ -961,17 +961,22 @@ func (b *Bot) handleDashboard(ctx context.Context, user *models.User, args strin
 		exchangeClient, exchangeName, err := b.getUserExchangeClient(ctx, user)
 		if err == nil && exchangeClient != nil {
 			// Get API key for user's exchange
-			var apiKey models.APIKey
+			var apiKey, apiSecret string
+			var encPassphrase *string
 			err = b.db.QueryRowContext(ctx, `
-				SELECT encrypted_api_key, encrypted_api_secret FROM api_keys
+				SELECT encrypted_api_key, encrypted_api_secret, encrypted_passphrase FROM api_keys
 				WHERE user_id = $1 AND exchange = $2 AND is_active = true
-			`, user.ID, exchangeName).Scan(&apiKey.EncryptedAPIKey, &apiKey.EncryptedAPISecret)
+			`, user.ID, exchangeName).Scan(&apiKey, &apiSecret, &encPassphrase)
 			if err == nil {
-				apiKeyStr, err := auth.Decrypt(apiKey.EncryptedAPIKey)
+				apiKeyStr, err := auth.Decrypt(apiKey)
 				if err == nil {
-					apiSecret, err := auth.Decrypt(apiKey.EncryptedAPISecret)
+					apiSecretStr, err := auth.Decrypt(apiSecret)
 					if err == nil {
-						balances, err := exchangeClient.GetBalances(ctx, apiKeyStr, apiSecret)
+						var passphraseStr string
+						if encPassphrase != nil {
+							passphraseStr, _ = auth.Decrypt(*encPassphrase)
+						}
+						balances, err := exchangeClient.GetBalances(ctx, apiKeyStr, apiSecretStr, passphraseStr)
 						if err == nil {
 							// Calculate total USD value
 							var totalUSD decimal.Decimal
@@ -1072,11 +1077,12 @@ func (b *Bot) syncPortfolioFromExchange(ctx context.Context, user *models.User) 
 
 	// Get API key from database for this specific exchange
 	var apiKey, apiSecret string
+	var encPassphrase *string
 	var exchangeName string
 	err = b.db.QueryRowContext(ctx, `
-		SELECT encrypted_api_key, encrypted_api_secret, exchange FROM api_keys
+		SELECT encrypted_api_key, encrypted_api_secret, encrypted_passphrase, exchange FROM api_keys
 		WHERE user_id = $1 AND is_active = true
-	`, user.ID).Scan(&apiKey, &apiSecret, &exchangeName)
+	`, user.ID).Scan(&apiKey, &apiSecret, &encPassphrase, &exchangeName)
 	if err != nil {
 		return fmt.Errorf("no API key found: %w", err)
 	}
@@ -1090,9 +1096,13 @@ func (b *Bot) syncPortfolioFromExchange(ctx context.Context, user *models.User) 
 	if err != nil {
 		return fmt.Errorf("failed to decrypt API secret: %w", err)
 	}
+	var passphraseStr string
+	if encPassphrase != nil {
+		passphraseStr, _ = auth.Decrypt(*encPassphrase)
+	}
 
 	// Get balances from user's exchange
-	balances, err := exchangeClient.GetBalances(ctx, apiKeyStr, apiSecretStr)
+	balances, err := exchangeClient.GetBalances(ctx, apiKeyStr, apiSecretStr, passphraseStr)
 	if err != nil {
 		return fmt.Errorf("failed to get balances from %s: %w", exchangeName, err)
 	}
@@ -1598,28 +1608,39 @@ func (b *Bot) handleBalance(ctx context.Context, user *models.User, args string)
 	}
 
 	// Get API key for user's exchange
-	var apiKey models.APIKey
+	var apiKey, apiSecret string
+	var encPassphrase *string
 	err = b.db.QueryRowContext(ctx, `
-		SELECT encrypted_api_key, encrypted_api_secret FROM api_keys
+		SELECT encrypted_api_key, encrypted_api_secret, encrypted_passphrase FROM api_keys
 		WHERE user_id = $1 AND exchange = $2 AND is_active = true
-	`, user.ID, exchangeName).Scan(&apiKey.EncryptedAPIKey, &apiKey.EncryptedAPISecret)
+	`, user.ID, exchangeName).Scan(&apiKey, &apiSecret, &encPassphrase)
 
 	if err != nil {
 		return "*💰 Balance*\n\nNo API key configured. Use /setapikey to add one.", nil, nil
 	}
 
 	// Decrypt API keys
-	apiKeyStr, err := auth.Decrypt(apiKey.EncryptedAPIKey)
+	apiKeyStr, err := auth.Decrypt(apiKey)
 	if err != nil {
 		return "*💰 Balance*\n\nFailed to decrypt API key.", nil, err
 	}
-	apiSecret, err := auth.Decrypt(apiKey.EncryptedAPISecret)
+	apiSecretStr, err := auth.Decrypt(apiSecret)
 	if err != nil {
 		return "*💰 Balance*\n\nFailed to decrypt API secret.", nil, err
 	}
 
+	// Decrypt passphrase if exists (for OKX)
+	passphrase := ""
+	if encPassphrase != nil {
+		decryptedPass, err := auth.Decrypt(*encPassphrase)
+		if err != nil {
+			return "*💰 Balance*\n\nFailed to decrypt passphrase.", nil, err
+		}
+		passphrase = decryptedPass
+	}
+
 	// Get balances from user's exchange
-	balances, err := exchangeClient.GetBalances(ctx, apiKeyStr, apiSecret)
+	balances, err := exchangeClient.GetBalances(ctx, apiKeyStr, apiSecretStr, passphrase)
 	if err != nil {
 		// Log error internally but don't expose to user (may contain sensitive API details)
 		b.logger.WithError(err).WithField("user_id", user.ID).WithField("exchange", exchangeName).Warn("Failed to fetch balance from exchange")

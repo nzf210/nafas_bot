@@ -199,7 +199,7 @@ func (m *SLTPMonitor) checkSLTPOrders(ctx context.Context) {
 		}
 
 		// Poll order status from exchange
-		updatedOrder, err := userExch.GetOrderStatus(ctx, userCtx.APIKey, userCtx.APISecret,
+		updatedOrder, err := userExch.GetOrderStatus(ctx, userCtx.APIKey, userCtx.APISecret, userCtx.Passphrase,
 			order.ExchangeOrderID, order.Symbol)
 		if err != nil {
 			o.logger.WithError(err).
