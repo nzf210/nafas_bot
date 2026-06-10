@@ -102,7 +102,7 @@ type Exchange interface {
 	GetName() string
 	GetBalances(ctx context.Context, apiKey, apiSecret string) (map[string]decimal.Decimal, error)
 	PlaceOrder(ctx context.Context, apiKey, apiSecret string, order models.Order) (*models.Order, error)
-	GetOrderStatus(ctx context.Context, apiKey, apiSecret string, orderID string) (*models.Order, error)
+	GetOrderStatus(ctx context.Context, apiKey, apiSecret string, orderID string, symbol string) (*models.Order, error)
 	GetPrice(ctx context.Context, symbol string) (decimal.Decimal, error)
 	GetTicker(ctx context.Context, symbol string) (*models.MarketSnapshot, error)
 	GetCandles(ctx context.Context, symbol, interval string, limit int) ([]models.MarketCandle, error)
@@ -445,9 +445,9 @@ func (c *BinanceClient) GetMinNotional(symbol string) decimal.Decimal {
 // Output/Return Value:
 //   - *models.Order: order dengan status updated
 //   - error: error jika fetch gagal
-func (c *BinanceClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret string, orderID string) (*models.Order, error) {
+func (c *BinanceClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret string, orderID string, symbol string) (*models.Order, error) {
 	timestamp := time.Now().UnixMilli()
-	params := fmt.Sprintf("orderId=%s&timestamp=%d&recvWindow=5000", orderID, timestamp)
+	params := fmt.Sprintf("symbol=%s&orderId=%s&timestamp=%d&recvWindow=5000", symbol, orderID, timestamp)
 	signature := c.signRequest(params, apiSecret)
 
 	url := fmt.Sprintf("%s/api/v3/order?%s&signature=%s", c.baseURL, params, signature)

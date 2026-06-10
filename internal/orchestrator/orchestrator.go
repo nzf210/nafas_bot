@@ -216,6 +216,9 @@ func (o *Orchestrator) runCycle(ctx context.Context) error {
 	startTime := time.Now()
 	o.logger.Info("Starting trading cycle")
 
+	// Sync pending orders from previous cycles
+	o.SyncPendingOrders(cycleCtx)
+
 	// Get all users with auto-trade enabled
 	users := o.GetActiveUsers(cycleCtx)
 	if len(users) == 0 {

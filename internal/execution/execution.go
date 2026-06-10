@@ -244,7 +244,7 @@ func (e *Executor) monitorOrderUntilFilled(ctx context.Context, order *models.Or
 				Warn("EXEC: Order monitoring timed out")
 			return order, ctx.Err()
 		case <-ticker.C:
-			updatedOrder, err := e.exchange.GetOrderStatus(ctx, apiKey, apiSecret, orderID)
+			updatedOrder, err := e.exchange.GetOrderStatus(ctx, apiKey, apiSecret, orderID, order.Symbol)
 			if err != nil {
 				e.logger.WithError(err).WithField("exchange_order_id", orderID).
 					Warn("EXEC: Failed to get order status, retrying...")
@@ -546,7 +546,7 @@ func (e *Executor) ExecuteTWAP(ctx context.Context, userID models.UUID, plan Exe
 // Output/Return Value:
 //   - *models.Order: order final status
 //   - error: error jika monitoring gagal atau timeout
-func (e *Executor) MonitorOrder(ctx context.Context, orderID string, apiKey, apiSecret string, timeout time.Duration) (*models.Order, error) {
+func (e *Executor) MonitorOrder(ctx context.Context, orderID string, apiKey, apiSecret string, symbol string, timeout time.Duration) (*models.Order, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -558,7 +558,7 @@ func (e *Executor) MonitorOrder(ctx context.Context, orderID string, apiKey, api
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-ticker.C:
-			order, err := e.exchange.GetOrderStatus(ctx, apiKey, apiSecret, orderID)
+			order, err := e.exchange.GetOrderStatus(ctx, apiKey, apiSecret, orderID, symbol)
 			if err != nil {
 				return nil, err
 			}
