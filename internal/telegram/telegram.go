@@ -1165,22 +1165,41 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 
 		floatingStr := ""
 		if balDec.GreaterThan(decimal.Zero) && asset != "BTC" && asset != "USDT" {
+			// Get quote asset from trading_pairs (case-insensitive lookup for both base and quote)
 			var quoteAsset string
-			err := b.db.QueryRowContext(ctx, "SELECT quote_asset FROM trading_pairs WHERE user_id = $1 AND base_asset = $2 LIMIT 1", user.ID, asset).Scan(&quoteAsset)
+			err := b.db.QueryRowContext(ctx, "SELECT UPPER(quote_asset) FROM trading_pairs WHERE user_id = $1 AND LOWER(base_asset) = LOWER($2) LIMIT 1", user.ID, asset).Scan(&quoteAsset)
 			if err != nil || quoteAsset == "" {
 				quoteAsset = "BTC"
 			}
 
-			symbol := asset + quoteAsset
-			// Case-insensitive match: DB may store 'BUY' or 'buy'
+			// Normalize asset to uppercase for symbol building
+			assetUpper := strings.ToUpper(asset)
+			quoteUpper := strings.ToUpper(quoteAsset)
+			
+			// Try multiple symbol formats to find the order
+			symbolFormats := []string{
+				assetUpper + quoteUpper,          // POLBTC (Binance format)
+				assetUpper + "-" + quoteUpper,    // POL-BTC (OKX format)
+				assetUpper + quoteUpper + "USDT",  // POLBTCUSDT (3-letter quote edge case)
+			}
+			
 			var avgPrice string
-			err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND symbol = $2 AND UPPER(side) = 'BUY' AND UPPER(status) = 'FILLED'", user.ID, symbol).Scan(&avgPrice)
-
+			foundSymbol := ""
+			
+			for _, symbol := range symbolFormats {
+				// Query avg price from orders (case-insensitive)
+				err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND LOWER(symbol) = LOWER($2) AND UPPER(side) = 'BUY' AND UPPER(status) = 'FILLED'", user.ID, symbol).Scan(&avgPrice)
+				if err == nil && avgPrice != "" && avgPrice != "0" {
+					foundSymbol = symbol
+					break
+				}
+			}
+			
 			// Only show floating if we have valid avgPrice from orders
-			if err == nil && avgPrice != "" && avgPrice != "0" {
+			if foundSymbol != "" {
 				avgPriceDec, _ := decimal.NewFromString(avgPrice)
 				if avgPriceDec.GreaterThan(decimal.Zero) {
-					currentPrice, err := b.exchange.GetPrice(ctx, symbol)
+					currentPrice, err := b.exchange.GetPrice(ctx, foundSymbol)
 					if err == nil && currentPrice.GreaterThan(decimal.Zero) {
 						// Calculate P/L percentage: (currentPrice - avgPrice) / avgPrice * 100
 						priceDiff := currentPrice.Sub(avgPriceDec)
@@ -1193,7 +1212,6 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 					}
 				}
 			}
-			// If no avgPrice or calculation failed, floatingStr stays empty (no N/A)
 		}
 
 		portfolio = append(portfolio, fmt.Sprintf("📈 %s: %s%s", asset, balDec.Round(6).String(), floatingStr))

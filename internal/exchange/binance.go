@@ -514,7 +514,9 @@ func (c *BinanceClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret st
 //   - decimal.Decimal: harga terakhir
 //   - error: error jika fetch gagal
 func (c *BinanceClient) GetPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
-	url := fmt.Sprintf("%s/api/v3/ticker/price?symbol=%s", c.baseURL, symbol)
+	// Normalize symbol: remove hyphens, convert to uppercase for Binance API
+	normalizedSymbol := strings.ToUpper(strings.ReplaceAll(symbol, "-", ""))
+	url := fmt.Sprintf("%s/api/v3/ticker/price?symbol=%s", c.baseURL, normalizedSymbol)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
