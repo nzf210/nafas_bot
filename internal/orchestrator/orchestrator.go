@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -789,9 +790,11 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 				OrderType: "MARKET",
 			}
 
-			// Risk check via Risk Guardian
+			// Risk check via Risk Guardian — use actual open positions and daily loss
 			guardian := risk.NewGuardian()
-			riskResult := guardian.CheckTrade(&user, userCtx.Config, order, 0, decimal.Zero)
+			currentPositions := o.getOpenPositionsCount(ctx, user.ID)
+			dailyLoss := o.getDailyLoss(ctx, user.ID)
+			riskResult := guardian.CheckTrade(&user, userCtx.Config, order, currentPositions, dailyLoss)
 
 			riskMap := map[string]int{
 				"low":     1,
@@ -816,8 +819,8 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 
 			// Calculate position size using risk parameters
 			stopLossPercent := decimal.NewFromFloat(2.0) // default 2%
-			if len(decision.ExecutionPlan.TakeProfitLevels) > 0 {
-				stopLossPercent = decimal.NewFromFloat(decision.ExecutionPlan.TakeProfitLevels[0].TargetPercent)
+			if decision.ExecutionPlan.StopLoss.GreaterThan(decimal.Zero) {
+				stopLossPercent = decision.ExecutionPlan.StopLoss
 			}
 
 			positionSizeQuote := guardian.CalculatePositionSize(
@@ -859,6 +862,33 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 			}
 
 			// ============================================================
+			// SELL-SIDE: Cap quantity to actual base asset holding
+			// ============================================================
+			if decision.TradeDecision == "SELL" {
+				baseAssetKey := strings.ToUpper(p.BaseAsset)
+				baseBalance, hasBase := balances[baseAssetKey]
+				if !hasBase || baseBalance.LessThanOrEqual(decimal.Zero) {
+					pairLogger.WithField("base_asset", baseAssetKey).
+						Warn("SELL blocked: user does not hold base asset")
+					return
+				}
+				// Cap sell quantity to actual holdings
+				if positionSizeBase.GreaterThan(baseBalance) {
+					positionSizeBase = baseBalance
+					pairLogger.WithField("capped_to_holding", baseBalance.String()).
+						Debug("SELL quantity capped to user's base asset balance")
+				}
+				// Re-apply LOT_SIZE after capping
+				if fixer, ok := o.exchange.(lotSizeFixer); ok {
+					positionSizeBase = fixer.FixQuantity(p.Symbol, positionSizeBase)
+				}
+				if positionSizeBase.LessThanOrEqual(decimal.Zero) {
+					pairLogger.Warn("SELL quantity zero after LOT_SIZE rounding, skipping")
+					return
+				}
+			}
+
+			// ============================================================
 			// BALANCE SUFFICIENCY CHECK (Pre-execution validation)
 			// ============================================================
 			// Calculate position value in quote currency (BTC) before execution
@@ -873,19 +903,32 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 				minNotional = getter.GetMinNotional(p.Symbol)
 			}
 
-			// Check balance sufficiency
+			// Check balance sufficiency:
+			// BUY → check quote asset (BTC) balance vs position value
+			// SELL → check base asset balance vs sell quantity (already capped above)
+			var availableForCheck decimal.Decimal
+			if decision.TradeDecision == "SELL" {
+				baseAssetKey := strings.ToUpper(p.BaseAsset)
+				if bal, ok := balances[baseAssetKey]; ok {
+					// For SELL, express availability in quote terms for MIN_NOTIONAL check
+					availableForCheck = bal.Mul(data.LatestPrice)
+				}
+			} else {
+				availableForCheck = portfolioValue
+			}
+
 			balanceCheck := CheckBalanceSufficiency(
-				portfolioValue,       // Available BTC balance
-				positionValueQuote,    // Position value in BTC
-				minNotional,           // MIN_NOTIONAL filter from Binance
+				availableForCheck,    // Available balance in quote terms
+				positionValueQuote,   // Position value in quote (BTC)
+				minNotional,          // MIN_NOTIONAL filter from Binance
 			)
 
 			if !balanceCheck.Sufficient {
 				pairLogger.WithFields(map[string]any{
 					"symbol":            p.Symbol,
-					"available_btc":     balanceCheck.Available.String(),
-					"required_btc":      balanceCheck.Required.String(),
-					"deficit_btc":       balanceCheck.Deficit.String(),
+					"available":         balanceCheck.Available.String(),
+					"required":          balanceCheck.Required.String(),
+					"deficit":           balanceCheck.Deficit.String(),
 					"min_notional_met":  balanceCheck.MinNotionalMet,
 					"reason":            balanceCheck.Reason,
 				}).Warn("BALANCE CHECK FAILED: Skipping order - insufficient balance or below min notional")
@@ -894,8 +937,8 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 
 			pairLogger.WithFields(map[string]any{
 				"symbol":           p.Symbol,
-				"available_btc":    balanceCheck.Available.String(),
-				"required_btc":     balanceCheck.Required.String(),
+				"available":        balanceCheck.Available.String(),
+				"required":         balanceCheck.Required.String(),
 				"min_notional":     minNotional.String(),
 				"min_notional_met": balanceCheck.MinNotionalMet,
 			}).Info("Balance sufficiency check passed")
@@ -949,6 +992,76 @@ func (o *Orchestrator) ProcessUser(ctx context.Context, user models.User, market
 	wgPair.Wait()
 
 	return nil
+}
+
+// getOpenPositionsCount returns the number of open positions for a user.
+// Nama Function: getOpenPositionsCount
+// Deskripsi: Menghitung jumlah posisi terbuka user berdasarkan pending SL/TP orders.
+//   Posisi dianggap terbuka jika masih ada protective order (STOP_LOSS_LIMIT atau
+//   TAKE_PROFIT_LIMIT) yang belum terpicu.
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk database operation
+//   - userID: models.UUID — user ID
+// Output/Return Value:
+//   - int: jumlah posisi terbuka (distinct symbols dengan protective orders pending)
+func (o *Orchestrator) getOpenPositionsCount(ctx context.Context, userID models.UUID) int {
+	var count int
+	err := o.db.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT symbol) FROM orders
+		WHERE user_id = $1 AND status IN ('pending', 'submitted', 'partial')
+		AND order_type IN ('STOP_LOSS_LIMIT', 'TAKE_PROFIT_LIMIT')
+	`, userID).Scan(&count)
+	if err != nil {
+		return 0
+	}
+	return count
+}
+
+// getDailyLoss computes the realized loss for today (negative P&L from SELL orders).
+// Nama Function: getDailyLoss
+// Deskripsi: Menghitung total kerugian yang direalisasi user hari ini.
+//   Dihitung dari SELL orders yang filled hari ini dimana harga jual lebih rendah dari
+//   harga rata-rata beli (artinya rugi). Return positive decimal = jumlah loss dalam
+//   quote currency. Digunakan oleh Risk Guardian untuk enforce DailyLossLimit.
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk database operation
+//   - userID: models.UUID — user ID
+// Output/Return Value:
+//   - decimal.Decimal: total daily loss (positive = rugi, zero = belum ada loss hari ini)
+func (o *Orchestrator) getDailyLoss(ctx context.Context, userID models.UUID) decimal.Decimal {
+	// Compute loss from today's filled SELL orders compared to avg buy price per symbol.
+	// Loss = SUM( (avg_buy_price - sell_price) * sell_executed_qty ) for sells below avg buy.
+	var totalLoss decimal.Decimal
+	rows, err := o.db.QueryContext(ctx, `
+		SELECT s.symbol, s.price AS sell_price, s.executed_quantity AS sell_qty,
+		       COALESCE(
+		           (SELECT SUM(b.price * b.executed_quantity) / NULLIF(SUM(b.executed_quantity), 0)
+		            FROM orders b
+		            WHERE b.user_id = $1 AND b.symbol = s.symbol
+		              AND UPPER(b.side) = 'BUY' AND UPPER(b.status) = 'FILLED'), 0
+		       ) AS avg_buy_price
+		FROM orders s
+		WHERE s.user_id = $1
+		  AND UPPER(s.side) = 'SELL' AND UPPER(s.status) = 'FILLED'
+		  AND s.created_at >= CURRENT_DATE
+	`, userID)
+	if err != nil {
+		return decimal.Zero
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var symbol string
+		var sellPrice, sellQty, avgBuyPrice decimal.Decimal
+		if err := rows.Scan(&symbol, &sellPrice, &sellQty, &avgBuyPrice); err != nil {
+			continue
+		}
+		if avgBuyPrice.GreaterThan(sellPrice) {
+			loss := avgBuyPrice.Sub(sellPrice).Mul(sellQty)
+			totalLoss = totalLoss.Add(loss)
+		}
+	}
+	return totalLoss
 }
 
 // logAIDecision logs AI decision to database for learning
