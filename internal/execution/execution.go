@@ -477,46 +477,55 @@ func (e *Executor) ExecuteTWAP(ctx context.Context, userID models.UUID, plan Exe
 	var totalExecuted decimal.Decimal
 	var avgPrice decimal.Decimal
 
-	ticker := time.NewTicker(sliceInterval)
-	defer ticker.Stop()
+	// Helper to execute one TWAP slice
+	executeSlice := func(sliceNum int) {
+		currentPrice, err := e.exchange.GetPrice(ctx, plan.Symbol)
+		if err != nil {
+			e.logger.Warnf("Failed to get current price for TWAP slice %d: %v", sliceNum, err)
+			return
+		}
 
-	for i := 0; i < numSlices; i++ {
-		select {
-		case <-ctx.Done():
-			return &ExecutionResult{Fills: allFills}, ctx.Err()
-		case <-ticker.C:
-			// Get current market price for reference
-			currentPrice, err := e.exchange.GetPrice(ctx, plan.Symbol)
-			if err != nil {
-				e.logger.Warnf("Failed to get current price: %v", err)
-				continue
-			}
+		slicePlan := ExecutionPlan{
+			Symbol:    plan.Symbol,
+			Side:      plan.Side,
+			OrderType: "LIMIT",
+			Quantity:  sliceQty,
+			Price:     currentPrice,
+		}
 
-			// Execute slice as limit order near market price
-			slicePlan := ExecutionPlan{
-				Symbol:    plan.Symbol,
-				Side:      plan.Side,
-				OrderType: "LIMIT",
-				Quantity:  sliceQty,
-				Price:     currentPrice,
-			}
+		result, err := e.ExecuteLimit(ctx, userID, slicePlan, apiKey, apiSecret)
+		if err != nil {
+			e.logger.Warnf("TWAP slice %d failed: %v", sliceNum, err)
+			return
+		}
 
-			result, err := e.ExecuteLimit(ctx, userID, slicePlan, apiKey, apiSecret)
-			if err != nil {
-				e.logger.Warnf("TWAP slice %d failed: %v", i+1, err)
-				continue
-			}
+		if result.Order != nil && result.Order.ExecutedQuantity.GreaterThan(decimal.Zero) {
+			totalExecuted = totalExecuted.Add(result.Order.ExecutedQuantity)
+			avgPrice = avgPrice.Add(result.Order.Price.Mul(result.Order.ExecutedQuantity))
+			allFills = append(allFills, models.TradeExecution{
+				ID:         uuid.New(),
+				OrderID:    result.Order.ID,
+				Price:      result.Order.Price,
+				Quantity:   result.Order.ExecutedQuantity,
+				ExecutedAt: time.Now(),
+			})
+		}
+	}
 
-			if result.Order != nil && result.Order.ExecutedQuantity.GreaterThan(decimal.Zero) {
-				totalExecuted = totalExecuted.Add(result.Order.ExecutedQuantity)
-				avgPrice = avgPrice.Add(result.Order.Price.Mul(result.Order.ExecutedQuantity))
-				allFills = append(allFills, models.TradeExecution{
-					ID:       uuid.New(),
-					OrderID:  result.Order.ID,
-					Price:    result.Order.Price,
-					Quantity: result.Order.ExecutedQuantity,
-					ExecutedAt: time.Now(),
-				})
+	// Execute first slice immediately (no delay)
+	executeSlice(1)
+
+	// Execute remaining slices on interval
+	if numSlices > 1 {
+		ticker := time.NewTicker(sliceInterval)
+		defer ticker.Stop()
+
+		for i := 1; i < numSlices; i++ {
+			select {
+			case <-ctx.Done():
+				return &ExecutionResult{Fills: allFills}, ctx.Err()
+			case <-ticker.C:
+				executeSlice(i + 1)
 			}
 		}
 	}

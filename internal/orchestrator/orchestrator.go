@@ -634,17 +634,25 @@ func calculateTrend(candles []models.MarketCandle) decimal.Decimal {
 }
 
 // getAdaptiveTTL returns TTL based on confidence level.
-// Higher confidence = longer cache (reduce calls for confident decisions).
-// Batas: 1 jam per pair untuk minimize token usage.
+// Nama Function: getAdaptiveTTL
+// Deskripsi: Mengembalikan TTL cache berdasarkan confidence AI decision.
+//   Higher confidence → cache lebih lama (mengurangi LLM calls).
+//   Low confidence → refresh lebih sering agar keputusan di-update.
+// Parameter/Value Input:
+//   - confidence: decimal.Decimal — confidence score (0-100) dari AI decision
+// Output/Return Value:
+//   - time.Duration: TTL untuk cache entry
 func getAdaptiveTTL(confidence decimal.Decimal) time.Duration {
 	conf, _ := confidence.Float64()
 	switch {
 	case conf >= 90:
-		return 60 * time.Minute
-	case conf >= 80:
-		return 60 * time.Minute
+		return 60 * time.Minute // Very confident → 1 hour
+	case conf >= 75:
+		return 30 * time.Minute // Fairly confident → 30 min
+	case conf >= 60:
+		return 15 * time.Minute // Moderate → 15 min
 	default:
-		return 60 * time.Minute
+		return 5 * time.Minute // Low confidence → refresh quickly
 	}
 }
 
