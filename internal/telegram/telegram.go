@@ -61,7 +61,8 @@ type Bot struct {
 	webhookURL      string
 	authService     *auth.Service
 	db              *sql.DB
-	exchange        exchange.Exchange
+	exchange        exchange.Exchange        // Primary exchange for market data (shared)
+	exchangeFactory *exchange.ExchangeFactory // Per-user exchange factory (multi-exchange support)
 	httpClient      *http.Client
 	logger          *logger.Logger
 	pairManager     *scanner.PairManager
@@ -110,6 +111,7 @@ type BotConfig struct {
 	AuthService     *auth.Service
 	DB              *sql.DB
 	Exchange        exchange.Exchange
+	ExchangeFactory *exchange.ExchangeFactory
 	PairManager     *scanner.PairManager
 	MaxPairsPerUser int
 }
@@ -135,6 +137,7 @@ func NewBotWithConfig(config BotConfig) *Bot {
 		authService:     config.AuthService,
 		db:              config.DB,
 		exchange:        config.Exchange,
+		exchangeFactory: config.ExchangeFactory,
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		logger:          logger.Default().WithField("module", "telegram"),
 		pairManager:     config.PairManager,
@@ -953,35 +956,40 @@ func (b *Bot) handleDashboard(ctx context.Context, user *models.User, args strin
 
 	// Fetch exchange balance if API key is set
 	balanceText := ""
-	if apiKeySet && b.exchange != nil {
-		var apiKey models.APIKey
-		err := b.db.QueryRowContext(ctx, `
-			SELECT encrypted_api_key, encrypted_api_secret FROM api_keys
-			WHERE user_id = $1 AND exchange = 'binance' AND is_active = true
-		`, user.ID).Scan(&apiKey.EncryptedAPIKey, &apiKey.EncryptedAPISecret)
-		if err == nil {
-			apiKeyStr, err := auth.Decrypt(apiKey.EncryptedAPIKey)
+	if apiKeySet && b.exchangeFactory != nil {
+		// Get user's exchange client (supports multiple exchanges)
+		exchangeClient, exchangeName, err := b.getUserExchangeClient(ctx, user)
+		if err == nil && exchangeClient != nil {
+			// Get API key for user's exchange
+			var apiKey models.APIKey
+			err = b.db.QueryRowContext(ctx, `
+				SELECT encrypted_api_key, encrypted_api_secret FROM api_keys
+				WHERE user_id = $1 AND exchange = $2 AND is_active = true
+			`, user.ID, exchangeName).Scan(&apiKey.EncryptedAPIKey, &apiKey.EncryptedAPISecret)
 			if err == nil {
-				apiSecret, err := auth.Decrypt(apiKey.EncryptedAPISecret)
+				apiKeyStr, err := auth.Decrypt(apiKey.EncryptedAPIKey)
 				if err == nil {
-					balances, err := b.exchange.GetBalances(ctx, apiKeyStr, apiSecret)
+					apiSecret, err := auth.Decrypt(apiKey.EncryptedAPISecret)
 					if err == nil {
-						// Calculate total USD value
-						var totalUSD decimal.Decimal
-						for asset, balance := range balances {
-							if balance.GreaterThan(decimal.Zero) {
-								if asset == "USDT" || asset == "BUSD" || asset == "USD" {
-									totalUSD = totalUSD.Add(balance)
-								} else {
-									// Get price in USDT
-									price, err := b.exchange.GetPrice(ctx, asset+"USDT")
-									if err == nil {
-										totalUSD = totalUSD.Add(balance.Mul(price))
+						balances, err := exchangeClient.GetBalances(ctx, apiKeyStr, apiSecret)
+						if err == nil {
+							// Calculate total USD value
+							var totalUSD decimal.Decimal
+							for asset, balance := range balances {
+								if balance.GreaterThan(decimal.Zero) {
+									if asset == "USDT" || asset == "BUSD" || asset == "USD" {
+										totalUSD = totalUSD.Add(balance)
+									} else {
+										// Get price in USDT using primary exchange (market data)
+										price, err := b.exchange.GetPrice(ctx, asset+"USDT")
+										if err == nil {
+											totalUSD = totalUSD.Add(balance.Mul(price))
+										}
 									}
 								}
 							}
+							balanceText = fmt.Sprintf("\n• Exchange Balance: $%s", totalUSD.Round(2).String())
 						}
-						balanceText = fmt.Sprintf("\n• Exchange Balance: $%s", totalUSD.Round(2).String())
 					}
 				}
 			}
@@ -999,32 +1007,76 @@ System:
 • Risk Guardian: ✅ Active%s`, firstNameOrUsername(user), autoTrade, user.WCHBalance.String(), balanceText), nil, nil
 }
 
+// getUserExchangeClient gets the exchange client for a specific user based on their configured exchange
+// Nama Function: getUserExchangeClient
+// Deskripsi: Mengambil exchange client untuk user tertentu. Lookup exchange name dari
+//   api_keys table, lalu gunakan factory untuk get/create client.
+//
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk operasi
+//   - user: *models.User — user yang akan diambil exchange-nya
+//
+// Output/Return Value:
+//   - exchange.Exchange: interface exchange client
+//   - string: nama exchange ("binance", "okx")
+//   - error: error jika gagal atau tidak ada API key
+func (b *Bot) getUserExchangeClient(ctx context.Context, user *models.User) (exchange.Exchange, string, error) {
+	if b.exchangeFactory == nil {
+		return nil, "", fmt.Errorf("exchange factory not configured")
+	}
+
+	// Get exchange name from api_keys
+	var exchangeName string
+	err := b.db.QueryRowContext(ctx, `
+		SELECT exchange FROM api_keys WHERE user_id = $1 AND is_active = true
+	`, user.ID).Scan(&exchangeName)
+	if err != nil {
+		return nil, "", fmt.Errorf("no active API key found: %w", err)
+	}
+
+	// Get exchange client from factory
+	client, err := b.exchangeFactory.GetExchange(user.ID.String(), exchangeName)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get exchange client: %w", err)
+	}
+
+	return client, exchangeName, nil
+}
+
 // syncPortfolioFromExchange syncs user portfolio from exchange to asset_inventory table
 // Nama Function: syncPortfolioFromExchange
 // Deskripsi: Mengambil balance dari exchange dan sync ke tabel asset_inventory.
+//   Mendukung multiple exchange (Binance, OKX) - exchange diambil dari api_keys user.
 // Parameter/Value Input:
 //   - ctx: context.Context — context untuk operasi
 //   - user: *models.User — user yang akan di-sync portfolionya
 //
 // Function yang Dipanggil/Dikonsumsi:
-//   - db.QueryRowContext: dipanggil untuk ambil encrypted API key
-//   - auth.Decrypt: dipanggil untuk decrypt API key
+//   - getUserExchangeClient: dipanggil untuk ambil exchange client berdasarkan user
 //   - exchange.GetBalances: dipanggil untuk ambil balance dari exchange
+//   - exchange.GetPrice: dipanggil untuk kalkulasi BTC equivalent
 //   - db.ExecContext: dipanggil untuk INSERT ON CONFLICT UPDATE ke asset_inventory
 //
 // Output/Return Value:
 //   - error: error jika sync gagal, nil jika berhasil
 func (b *Bot) syncPortfolioFromExchange(ctx context.Context, user *models.User) error {
-	if b.db == nil || b.exchange == nil {
-		return fmt.Errorf("database or exchange not configured")
+	if b.db == nil {
+		return fmt.Errorf("database not configured")
 	}
 
-	// Get API key
+	// Get user's exchange client (supports multiple exchanges)
+	exchangeClient, _, err := b.getUserExchangeClient(ctx, user)
+	if err != nil {
+		return fmt.Errorf("failed to get exchange client: %w", err)
+	}
+
+	// Get API key from database for this specific exchange
 	var apiKey, apiSecret string
-	err := b.db.QueryRowContext(ctx, `
-		SELECT encrypted_api_key, encrypted_api_secret FROM api_keys
-		WHERE user_id = $1 AND exchange = 'binance' AND is_active = true
-	`, user.ID).Scan(&apiKey, &apiSecret)
+	var exchangeName string
+	err = b.db.QueryRowContext(ctx, `
+		SELECT encrypted_api_key, encrypted_api_secret, exchange FROM api_keys
+		WHERE user_id = $1 AND is_active = true
+	`, user.ID).Scan(&apiKey, &apiSecret, &exchangeName)
 	if err != nil {
 		return fmt.Errorf("no API key found: %w", err)
 	}
@@ -1039,16 +1091,16 @@ func (b *Bot) syncPortfolioFromExchange(ctx context.Context, user *models.User) 
 		return fmt.Errorf("failed to decrypt API secret: %w", err)
 	}
 
-	// Get balances from exchange
-	balances, err := b.exchange.GetBalances(ctx, apiKeyStr, apiSecretStr)
+	// Get balances from user's exchange
+	balances, err := exchangeClient.GetBalances(ctx, apiKeyStr, apiSecretStr)
 	if err != nil {
-		return fmt.Errorf("failed to get balances: %w", err)
+		return fmt.Errorf("failed to get balances from %s: %w", exchangeName, err)
 	}
 
 	// Update asset_inventory for each asset with balance > 0
 	for asset, balance := range balances {
 		if balance.GreaterThan(decimal.Zero) {
-			// Calculate BTC equivalent (simplified - get BTC price)
+			// Calculate BTC equivalent using primary exchange (market data)
 			btcEquiv := decimal.Zero
 			if asset != "BTC" {
 				btcPrice, err := b.exchange.GetPrice(ctx, "BTCUSDT")
@@ -1120,8 +1172,9 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 			}
 
 			symbol := asset + quoteAsset
+			// Case-insensitive match: DB may store 'BUY' or 'buy'
 			var avgPrice string
-			err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND symbol = $2 AND side = 'buy' AND status = 'filled'", user.ID, symbol).Scan(&avgPrice)
+			err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND symbol = $2 AND UPPER(side) = 'BUY' AND UPPER(status) = 'FILLED'", user.ID, symbol).Scan(&avgPrice)
 
 			// Only show floating if we have valid avgPrice from orders
 			if err == nil && avgPrice != "" && avgPrice != "0" {
@@ -1491,14 +1544,15 @@ func MaskAPIKey(key string) string {
 
 // handleBalance handles /balance command
 // Nama Function: handleBalance
-// Deskripsi: Handler untuk command /balance.
+// Deskripsi: Handler untuk command /balance. Mendukung multiple exchange (Binance, OKX).
+//   Exchange diambil dari api_keys user.
 // Parameter/Value Input:
 //   - ctx: context.Context — context
 //   - user: *models.User — user
 //   - args: string — argumen
 //
 // Function yang Dipanggil/Dikonsumsi:
-//   - db.QueryRowContext: dipanggil untuk ambil encrypted API key
+//   - getUserExchangeClient: dipanggil untuk ambil exchange client berdasarkan user
 //   - auth.Decrypt: dipanggil untuk decrypt API key
 //   - exchange.GetBalances: dipanggil untuk ambil balance dari exchange
 //
@@ -1507,15 +1561,22 @@ func MaskAPIKey(key string) string {
 //   - interface{}: inline keyboard (nil)
 //   - error: error jika fetch gagal
 func (b *Bot) handleBalance(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
-	if b.exchange == nil || b.db == nil {
+	if b.exchangeFactory == nil || b.db == nil {
 		return "*💰 Balance*\n\nExchange not configured.", nil, nil
 	}
 
+	// Get user's exchange client (supports multiple exchanges)
+	exchangeClient, exchangeName, err := b.getUserExchangeClient(ctx, user)
+	if err != nil {
+		return "*💰 Balance*\n\nNo API key configured. Use /setapikey to add one.", nil, nil
+	}
+
+	// Get API key for user's exchange
 	var apiKey models.APIKey
-	err := b.db.QueryRowContext(ctx, `
+	err = b.db.QueryRowContext(ctx, `
 		SELECT encrypted_api_key, encrypted_api_secret FROM api_keys
-		WHERE user_id = $1 AND exchange = 'binance' AND is_active = true
-	`, user.ID).Scan(&apiKey.EncryptedAPIKey, &apiKey.EncryptedAPISecret)
+		WHERE user_id = $1 AND exchange = $2 AND is_active = true
+	`, user.ID, exchangeName).Scan(&apiKey.EncryptedAPIKey, &apiKey.EncryptedAPISecret)
 
 	if err != nil {
 		return "*💰 Balance*\n\nNo API key configured. Use /setapikey to add one.", nil, nil
@@ -1531,12 +1592,12 @@ func (b *Bot) handleBalance(ctx context.Context, user *models.User, args string)
 		return "*💰 Balance*\n\nFailed to decrypt API secret.", nil, err
 	}
 
-	// Get balances from exchange
-	balances, err := b.exchange.GetBalances(ctx, apiKeyStr, apiSecret)
+	// Get balances from user's exchange
+	balances, err := exchangeClient.GetBalances(ctx, apiKeyStr, apiSecret)
 	if err != nil {
 		// Log error internally but don't expose to user (may contain sensitive API details)
-		b.logger.WithError(err).WithField("user_id", user.ID).Warn("Failed to fetch balance from exchange")
-		return "*💰 Balance*\n\nGagal mengambil balance. Pastikan API key valid dan memiliki permission 'Enable Spot & Margin Trading'.", nil, nil
+		b.logger.WithError(err).WithField("user_id", user.ID).WithField("exchange", exchangeName).Warn("Failed to fetch balance from exchange")
+		return fmt.Sprintf("*💰 Balance*\n\nGagal mengambil balance dari %s. Pastikan API key valid dan memiliki permission 'Enable Spot & Margin Trading'.", strings.ToUpper(exchangeName)), nil, nil
 	}
 
 	var balanceLines []string
@@ -1692,7 +1753,7 @@ Show report from last known data.
 	rows, err := b.db.QueryContext(ctx, `
 		SELECT COUNT(*) FROM orders
 		WHERE user_id = $1 AND status = 'filled'
-		AND created_at >= `+dateFilter+` AND side = 'buy'`, user.ID)
+		AND created_at >= `+dateFilter+` AND UPPER(side) = 'BUY'`, user.ID)
 	if err == nil {
 		defer rows.Close()
 		if rows.Next() {

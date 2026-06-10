@@ -117,9 +117,13 @@ func main() {
 	_ = learning.NewService(db)
 	_ = strategy.NewStrategyEngine(db)
 
-	// Initialize exchange client
+	// Initialize exchange factory (supports multiple exchanges: Binance, OKX)
+	exchangeFactory := exchange.NewExchangeFactory()
+
+	// Initialize primary exchange client for market data (shared by all users)
 	binanceClient := exchange.NewBinance()
-	logg.Infof("Exchange client initialized: %s", binanceClient.GetName())
+	logg.Infof("Exchange factory initialized with: %v", exchangeFactory.GetSupportedExchanges())
+	logg.Infof("Primary exchange client: %s", binanceClient.GetName())
 
 	// Load LOT_SIZE filters — WAJIB sebelum bot mulai trading
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 30*time.Second)
@@ -190,7 +194,8 @@ func main() {
 			WebhookURL:      cfg.TelegramWebhookURL,
 			AuthService:     authService,
 			DB:              db,
-			Exchange:        binanceClient,
+			Exchange:        binanceClient,      // Primary exchange for market data
+			ExchangeFactory: exchangeFactory,     // Per-user exchange factory (multi-exchange)
 			PairManager:     pairManager,
 			MaxPairsPerUser: cfg.MaxPairsPerUser,
 		})
