@@ -269,7 +269,6 @@ func (b *Bot) RegisterDefaultHandlers() {
 	b.Register("addpair", b.handleAddPair)
 	b.Register("removepair", b.handleRemovePair)
 	b.Register("dashboard", b.handleDashboard)
-	b.Register("portfolio", b.handlePortfolio)
 	b.Register("settings", b.handleSettings)
 	b.Register("status", b.handleStatus)
 	b.Register("positions", b.handlePositions)
@@ -967,36 +966,21 @@ System:
 • Risk Guardian: ✅ Active%s`, firstNameOrUsername(user), autoTrade, user.WCHBalance.String(), balanceText), nil, nil
 }
 
-// handlePortfolio handles /portfolio command
-// Nama Function: handlePortfolio
-// Deskripsi: Handler untuk command /portfolio.
-// Parameter/Value Input:
-//   - ctx: context.Context — context
-//   - user: *models.User — user
-//   - args: string — argumen
-//
-// Function yang Dipanggil/Dikonsumsi:
-//   - db.QueryContext: dipanggil untuk ambil asset inventory
-//
-// Output/Return Value:
-//   - string: portfolio message
-//   - interface{}: inline keyboard (nil)
-//   - error: error jika query gagal
-func (b *Bot) handlePortfolio(ctx context.Context, user *models.User, args string) (string, interface{}, error) {
+// buildPortfolioString builds the portfolio string with floating PNL
+func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) string {
 	if b.db == nil {
-		return "*💼 Portfolio*\n\n📈 BTC: loading...\n📈 ETH: loading...\n📈 SOL: loading...", nil, nil
+		return "📈 BTC: loading...\n📈 ETH: loading...\n📈 SOL: loading..."
 	}
 
 	rows, err := b.db.QueryContext(ctx, `
 		SELECT asset, balance, locked_balance FROM asset_inventory WHERE user_id = $1 ORDER BY asset
 	`, user.ID)
 	if err != nil {
-		return "", nil, err
+		return "No assets yet."
 	}
 	defer rows.Close()
 
 	var portfolio []string
-	var totalBTC string
 	for rows.Next() {
 		var asset, balance, locked string
 		if err := rows.Scan(&asset, &balance, &locked); err != nil {
@@ -1034,10 +1018,10 @@ func (b *Bot) handlePortfolio(ctx context.Context, user *models.User, args strin
 	}
 
 	if len(portfolio) == 0 {
-		portfolio = []string{"No assets yet. Use /balance to sync."}
+		return "No assets yet."
 	}
 
-	return fmt.Sprintf("*💼 Portfolio*\n\n%s\n\n*Total Value:* %s", strings.Join(portfolio, "\n"), totalBTC), nil, nil
+	return strings.Join(portfolio, "\n")
 }
 
 // handleSettings handles /settings command
@@ -1176,7 +1160,10 @@ func (b *Bot) handleStatus(ctx context.Context, user *models.User, args string) 
 ✅ AI Service: ✅ Online
 ✅ Risk Guardian: ✅ Active
 
-*Last Sync:* %s`, dbStatus, exchangeStatus, time.Now().Format("15:04:05")), nil, nil
+*💼 Portfolio*
+%s
+
+*Last Sync:* %s`, dbStatus, exchangeStatus, b.buildPortfolioString(ctx, user), time.Now().Format("15:04:05")), nil, nil
 }
 
 // handlePositions handles /positions command
@@ -1649,9 +1636,12 @@ Show report from last known data.
 *📋 Recent Activity:*
 %s
 
+*💼 Portfolio*
+%s
+
 *🕐 Generated:* %s
 
-Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTitle, totalTrades, completedTrades, winRate, netBTCGrowth, btcAccumulated, recentActivity, time.Now().Format("2006-01-02 15:04")), nil, nil
+Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTitle, totalTrades, completedTrades, winRate, netBTCGrowth, btcAccumulated, recentActivity, b.buildPortfolioString(ctx, user), time.Now().Format("2006-01-02 15:04")), nil, nil
 }
 
 // handleSetReport handles /setreport command
