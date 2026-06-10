@@ -1002,7 +1002,35 @@ func (b *Bot) handlePortfolio(ctx context.Context, user *models.User, args strin
 		if err := rows.Scan(&asset, &balance, &locked); err != nil {
 			continue
 		}
-		portfolio = append(portfolio, fmt.Sprintf("📈 %s: %s", asset, balance))
+		
+		balDec, _ := decimal.NewFromString(balance)
+		
+		floatingStr := ""
+		if balDec.GreaterThan(decimal.Zero) && asset != "BTC" && asset != "USDT" {
+			var quoteAsset string
+			err := b.db.QueryRowContext(ctx, "SELECT quote_asset FROM trading_pairs WHERE user_id = $1 AND base_asset = $2 LIMIT 1", user.ID, asset).Scan(&quoteAsset)
+			if err == nil {
+				symbol := asset + quoteAsset
+				var avgPrice string
+				err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND symbol = $2 AND side = 'buy' AND status = 'filled'", user.ID, symbol).Scan(&avgPrice)
+				
+				if err == nil && avgPrice != "0" {
+					avgPriceDec, _ := decimal.NewFromString(avgPrice)
+					currentPrice, err := b.exchange.GetPrice(ctx, symbol)
+					if err == nil && currentPrice.GreaterThan(decimal.Zero) && avgPriceDec.GreaterThan(decimal.Zero) {
+						floating := currentPrice.Sub(avgPriceDec).Mul(balDec)
+						percent := currentPrice.Sub(avgPriceDec).Div(avgPriceDec).Mul(decimal.NewFromInt(100))
+						sign := "+"
+						if floating.LessThan(decimal.Zero) {
+							sign = ""
+						}
+						floatingStr = fmt.Sprintf(" (Float: %s%s %s | %s%.2f%%)", sign, floating.Round(6).String(), quoteAsset, sign, percent.InexactFloat64())
+					}
+				}
+			}
+		}
+
+		portfolio = append(portfolio, fmt.Sprintf("📈 %s: %s%s", asset, balDec.Round(6).String(), floatingStr))
 	}
 
 	if len(portfolio) == 0 {
@@ -1558,6 +1586,9 @@ Show report from last known data.
 
 	// Avoid unused variable warning
 	_ = totalBTC
+	if netBTCGrowth == "" {
+		netBTCGrowth = "0"
+	}
 
 	winRate := "0%"
 	if completedTrades > 0 {
@@ -1571,6 +1602,10 @@ Show report from last known data.
 		WHERE user_id = $1 AND created_at >= `+dateFilter, user.ID).Scan(&btcAccumulated)
 	if err != nil {
 		btcAccumulated = "0"
+	} else {
+		if d, err := decimal.NewFromString(btcAccumulated); err == nil {
+			btcAccumulated = d.Round(6).String()
+		}
 	}
 
 	// Get recent activity
@@ -1589,6 +1624,9 @@ Show report from last known data.
 			var quantity string
 			var createdAt time.Time
 			if recentRows.Scan(&symbol, &side, &quantity, &status, &createdAt) == nil {
+				if q, err := decimal.NewFromString(quantity); err == nil {
+					quantity = q.Round(6).String()
+				}
 				activities = append(activities, fmt.Sprintf("• %s %s %s (%s)", side, quantity, symbol, status))
 			}
 		}

@@ -468,17 +468,25 @@ func (c *BinanceClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret st
 	}
 
 	var binanceOrder struct {
-		OrderID     int64  `json:"orderId"`
-		Symbol      string `json:"symbol"`
-		Side        string `json:"side"`
-		Type        string `json:"type"`
-		Price       string `json:"price"`
-		OrigQty     string `json:"origQty"`
-		ExecutedQty string `json:"executedQty"`
-		Status      string `json:"status"`
+		OrderID             int64  `json:"orderId"`
+		Symbol              string `json:"symbol"`
+		Side                string `json:"side"`
+		Type                string `json:"type"`
+		Price               string `json:"price"`
+		OrigQty             string `json:"origQty"`
+		ExecutedQty         string `json:"executedQty"`
+		CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
+		Status              string `json:"status"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&binanceOrder); err != nil {
 		return nil, err
+	}
+
+	executedQty := parseDecimal(binanceOrder.ExecutedQty)
+	quoteQty := parseDecimal(binanceOrder.CummulativeQuoteQty)
+	price := parseDecimal(binanceOrder.Price)
+	if price.IsZero() && executedQty.GreaterThan(decimal.Zero) {
+		price = quoteQty.Div(executedQty)
 	}
 
 	return &models.Order{
@@ -486,7 +494,8 @@ func (c *BinanceClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret st
 		Symbol:           binanceOrder.Symbol,
 		Side:             binanceOrder.Side,
 		OrderType:        binanceOrder.Type,
-		ExecutedQuantity: parseDecimal(binanceOrder.ExecutedQty),
+		Price:            price,
+		ExecutedQuantity: executedQty,
 		Status:           mapBinanceStatus(binanceOrder.Status),
 	}, nil
 }
