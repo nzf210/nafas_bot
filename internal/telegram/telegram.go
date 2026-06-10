@@ -1136,7 +1136,23 @@ func (b *Bot) syncPortfolioFromExchange(ctx context.Context, user *models.User) 
 }
 
 // buildPortfolioString builds the portfolio string with floating PNL
-func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) string {
+// Nama Function: buildPortfolioString
+// Deskripsi: Membangun string daftar saldo portfolio user. Floating PNL hanya
+//   ditampilkan jika showFloat=true (dipakai /status). Untuk /report, PNL per pair
+//   ditangani terpisah oleh buildPairsPnLString sehingga portfolio cukup menampilkan saldo.
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk query DB dan call exchange
+//   - user: *models.User — user pemilik portfolio
+//   - showFloat: bool — true untuk menampilkan floating PNL per asset, false untuk saldo saja
+//
+// Function yang Dipanggil/Dikonsumsi:
+//   - syncPortfolioFromExchange: sinkronisasi saldo dari exchange ke asset_inventory
+//   - db.QueryContext: ambil daftar asset & balance dari asset_inventory
+//   - exchange.GetPrice: ambil harga terkini untuk hitung floating (hanya jika showFloat)
+//
+// Output/Return Value:
+//   - string: daftar saldo portfolio (dengan/atau tanpa floating PNL)
+func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User, showFloat bool) string {
 	if b.db == nil {
 		return "📈 BTC: loading...\n📈 ETH: loading...\n📈 SOL: loading..."
 	}
@@ -1164,7 +1180,7 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 		balDec, _ := decimal.NewFromString(balance)
 
 		floatingStr := ""
-		if balDec.GreaterThan(decimal.Zero) && asset != "BTC" && asset != "USDT" {
+		if showFloat && balDec.GreaterThan(decimal.Zero) && asset != "BTC" && asset != "USDT" {
 			// Get quote asset from trading_pairs (case-insensitive lookup for both base and quote)
 			var quoteAsset string
 			err := b.db.QueryRowContext(ctx, "SELECT UPPER(quote_asset) FROM trading_pairs WHERE user_id = $1 AND LOWER(base_asset) = LOWER($2) LIMIT 1", user.ID, asset).Scan(&quoteAsset)
@@ -1230,6 +1246,125 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 	}
 
 	return strings.Join(portfolio, "\n")
+}
+
+// splitTradingSymbol memisahkan symbol trading menjadi base & quote asset.
+// Nama Function: splitTradingSymbol
+// Deskripsi: Memecah symbol (mis. "POLBTC" atau "POL-BTC") menjadi base & quote asset
+//   dengan mencocokkan daftar quote asset yang umum. Dipakai sebagai fallback ketika
+//   data pair tidak ditemukan di tabel trading_pairs.
+// Parameter/Value Input:
+//   - symbol: string — symbol trading (boleh mengandung tanda hubung)
+// Output/Return Value:
+//   - string: base asset (uppercase)
+//   - string: quote asset (uppercase), default "BTC" jika tidak terdeteksi
+func splitTradingSymbol(symbol string) (string, string) {
+	s := strings.ToUpper(strings.ReplaceAll(symbol, "-", ""))
+	quotes := []string{"USDT", "FDUSD", "USDC", "TUSD", "BUSD", "BTC", "ETH", "BNB", "EUR", "TRY"}
+	for _, q := range quotes {
+		if strings.HasSuffix(s, q) && len(s) > len(q) {
+			return strings.TrimSuffix(s, q), q
+		}
+	}
+	return s, "BTC"
+}
+
+// buildPairsPnLString builds the PNL string for pairs the user has actually bought.
+// Nama Function: buildPairsPnLString
+// Deskripsi: Membangun ringkasan PNL (floating/unrealized) untuk tiap PAIR yang sudah
+//   dibeli user (ada order BUY berstatus FILLED), bukan untuk seluruh asset di portfolio.
+//   PNL dihitung dari harga rata-rata beli vs harga terkini, dikali saldo asset yang masih dipegang.
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk query DB dan call exchange
+//   - user: *models.User — user pemilik order
+//
+// Function yang Dipanggil/Dikonsumsi:
+//   - db.QueryContext: ambil daftar pair yang sudah dibeli + harga rata-rata dari tabel orders
+//   - db.QueryRowContext: ambil base/quote asset dari trading_pairs & saldo dari asset_inventory
+//   - exchange.GetPrice: ambil harga terkini untuk hitung floating PNL
+//
+// Output/Return Value:
+//   - string: ringkasan PNL per pair, atau pesan info jika belum ada pembelian
+func (b *Bot) buildPairsPnLString(ctx context.Context, user *models.User) string {
+	if b.db == nil {
+		return "Database not connected."
+	}
+
+	rows, err := b.db.QueryContext(ctx, `
+		SELECT symbol,
+		       COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) AS avg_price
+		FROM orders
+		WHERE user_id = $1 AND UPPER(side) = 'BUY' AND UPPER(status) = 'FILLED'
+		GROUP BY symbol
+		ORDER BY symbol
+	`, user.ID)
+	if err != nil {
+		return "No purchased pairs yet."
+	}
+	defer rows.Close()
+
+	var lines []string
+	for rows.Next() {
+		var symbol, avgPrice string
+		if err := rows.Scan(&symbol, &avgPrice); err != nil {
+			continue
+		}
+
+		avgPriceDec, _ := decimal.NewFromString(avgPrice)
+		if avgPriceDec.LessThanOrEqual(decimal.Zero) {
+			continue
+		}
+
+		// Resolve base/quote asset: prefer trading_pairs, fallback to symbol parsing.
+		var baseAsset, quoteAsset string
+		err := b.db.QueryRowContext(ctx, "SELECT UPPER(base_asset), UPPER(quote_asset) FROM trading_pairs WHERE user_id = $1 AND LOWER(symbol) = LOWER($2) LIMIT 1", user.ID, symbol).Scan(&baseAsset, &quoteAsset)
+		if err != nil || baseAsset == "" {
+			baseAsset, quoteAsset = splitTradingSymbol(symbol)
+		}
+
+		// Quantity still held for this base asset.
+		var balance string
+		heldQty := decimal.Zero
+		if err := b.db.QueryRowContext(ctx, "SELECT balance FROM asset_inventory WHERE user_id = $1 AND UPPER(asset) = UPPER($2) LIMIT 1", user.ID, baseAsset).Scan(&balance); err == nil {
+			heldQty, _ = decimal.NewFromString(balance)
+		}
+
+		pairLabel := baseAsset + "/" + quoteAsset
+
+		if b.exchange == nil {
+			lines = append(lines, fmt.Sprintf("📊 %s: P/L N/A (avg %s %s)", pairLabel, avgPriceDec.Round(8).String(), quoteAsset))
+			continue
+		}
+
+		currentPrice, err := b.exchange.GetPrice(ctx, symbol)
+		if err != nil || currentPrice.LessThanOrEqual(decimal.Zero) {
+			lines = append(lines, fmt.Sprintf("📊 %s: P/L N/A (avg %s %s)", pairLabel, avgPriceDec.Round(8).String(), quoteAsset))
+			continue
+		}
+
+		priceDiff := currentPrice.Sub(avgPriceDec)
+		percent := priceDiff.Div(avgPriceDec).Mul(decimal.NewFromInt(100))
+		floating := priceDiff.Mul(heldQty)
+
+		emoji := "📈"
+		sign := "+"
+		if percent.LessThan(decimal.Zero) {
+			emoji = "📉"
+			sign = ""
+		}
+
+		lines = append(lines, fmt.Sprintf("%s %s: %s%s %s (%s%.2f%%)\n   Qty %s @ avg %s | now %s",
+			emoji, pairLabel,
+			sign, floating.Round(8).String(), quoteAsset,
+			sign, percent.InexactFloat64(),
+			heldQty.Round(6).String(), avgPriceDec.Round(8).String(), currentPrice.Round(8).String()))
+	}
+
+	if len(lines) == 0 {
+		return "No purchased pairs yet."
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // handleSettings handles /settings command
@@ -1371,7 +1506,7 @@ func (b *Bot) handleStatus(ctx context.Context, user *models.User, args string) 
 *💼 Portfolio*
 %s
 
-*Last Sync:* %s`, dbStatus, exchangeStatus, b.buildPortfolioString(ctx, user), time.Now().Format("15:04:05")), nil, nil
+*Last Sync:* %s`, dbStatus, exchangeStatus, b.buildPortfolioString(ctx, user, true), time.Now().Format("15:04:05")), nil, nil
 }
 
 // handlePositions handles /positions command
@@ -1852,12 +1987,15 @@ Show report from last known data.
 *📋 Recent Activity:*
 %s
 
-*💼 Portfolio*
+*📊 P/L per Pair (Bought):*
+%s
+
+*💼 Portfolio (Balances)*
 %s
 
 *🕐 Generated:* %s
 
-Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTitle, totalTrades, completedTrades, winRate, netBTCGrowth, btcAccumulated, recentActivity, b.buildPortfolioString(ctx, user), time.Now().Format("2006-01-02 15:04")), nil, nil
+Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTitle, totalTrades, completedTrades, winRate, netBTCGrowth, btcAccumulated, recentActivity, b.buildPairsPnLString(ctx, user), b.buildPortfolioString(ctx, user, false), time.Now().Format("2006-01-02 15:04")), nil, nil
 }
 
 // handleSetReport handles /setreport command
