@@ -1775,27 +1775,53 @@ Show report from last known data.
 		completedTrades = 0
 	}
 
-	// Calculate win rate from completed trades with P/L
-	rows, err := b.db.QueryContext(ctx, `
-		SELECT COUNT(*) FROM orders
-		WHERE user_id = $1 AND status = 'filled'
-		AND created_at >= `+dateFilter+` AND UPPER(side) = 'BUY'`, user.ID)
+	// Calculate win rate from actual profitable closed positions:
+	// A "win" = a SELL order whose price > avg BUY price for the same symbol.
+	var totalClosed, profitableClosed int
+	winRows, err := b.db.QueryContext(ctx, `
+		SELECT s.symbol, s.price AS sell_price,
+		       COALESCE(
+		           (SELECT SUM(b.price * b.executed_quantity) / NULLIF(SUM(b.executed_quantity), 0)
+		            FROM orders b WHERE b.user_id = $1 AND b.symbol = s.symbol
+		            AND UPPER(b.side) = 'BUY' AND UPPER(b.status) = 'FILLED'), 0
+		       ) AS avg_buy_price
+		FROM orders s
+		WHERE s.user_id = $1 AND UPPER(s.side) = 'SELL' AND UPPER(s.status) = 'FILLED'
+		AND s.created_at >= `+dateFilter, user.ID)
 	if err == nil {
-		defer rows.Close()
-		if rows.Next() {
-			rows.Scan(&winningTrades)
+		defer winRows.Close()
+		for winRows.Next() {
+			var symbol string
+			var sellPrice, avgBuy decimal.Decimal
+			if winRows.Scan(&symbol, &sellPrice, &avgBuy) == nil {
+				totalClosed++
+				if sellPrice.GreaterThan(avgBuy) && avgBuy.GreaterThan(decimal.Zero) {
+					profitableClosed++
+				}
+			}
 		}
 	}
+	winningTrades = profitableClosed
 
-	// Avoid unused variable warning
-	_ = totalBTC
-	if netBTCGrowth == "" {
+	// Net BTC Growth: compute from BTC accumulation ledger + realized profit from sells
+	err = b.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(btc_received), 0) FROM btc_accumulation_ledger
+		WHERE user_id = $1 AND created_at >= `+dateFilter, user.ID).Scan(&netBTCGrowth)
+	if err != nil || netBTCGrowth == "" {
 		netBTCGrowth = "0"
+	} else {
+		if d, err := decimal.NewFromString(netBTCGrowth); err == nil {
+			netBTCGrowth = d.Round(6).String()
+		}
 	}
+	_ = totalBTC
 
 	winRate := "0%"
-	if completedTrades > 0 {
-		winRate = fmt.Sprintf("%.0f%%", float64(winningTrades)/float64(completedTrades)*100)
+	if totalClosed > 0 {
+		winRate = fmt.Sprintf("%.0f%%", float64(winningTrades)/float64(totalClosed)*100)
+	} else if completedTrades > 0 {
+		// Fallback: no closed positions yet → show ratio of BUY fills as activity indicator
+		winRate = "N/A (no closed positions)"
 	}
 
 	// Get BTC accumulation from ledger

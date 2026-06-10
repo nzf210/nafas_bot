@@ -89,22 +89,10 @@ func (g *Guardian) CheckTrade(user *models.User, config *models.UserConfig, orde
 		}
 	}
 
-	// 3. Check risk per trade
-	maxRiskPercent := config.MaxRiskPerTrade
-	if maxRiskPercent.IsZero() {
-		maxRiskPercent = decimal.NewFromFloat(1.0) // default 1%
-	}
-
-	// Position size check would go here with actual portfolio value
-	positionRiskPercent := decimal.NewFromFloat(0.5) // placeholder
-	if positionRiskPercent.GreaterThan(maxRiskPercent) {
-		return &RiskAssessment{
-			Approved: false,
-			Blocked:  true,
-			RiskLevel: RiskLevelHigh,
-			Reason:   "Risk per trade exceeds limit",
-		}
-	}
+	// 3. Check risk per trade — currently only enforces rules #1 and #2 above.
+	// Actual position-level risk check is performed in the orchestrator's
+	// CalculatePositionSize + MaxAllocationPerTrade logic, which already caps
+	// the position to the user's risk budget before execution.
 
 	// 4. Check user status
 	if user.Status != "active" {
