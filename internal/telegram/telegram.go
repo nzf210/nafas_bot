@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nzf210/nafas-bot/internal/auth"
 	"github.com/nzf210/nafas-bot/internal/exchange"
 	"github.com/nzf210/nafas-bot/internal/logger"
@@ -950,9 +951,41 @@ func (b *Bot) handleDashboard(ctx context.Context, user *models.User, args strin
 		}
 	}
 
+	// Fetch exchange balance if API key is set
 	balanceText := ""
-	if apiKeySet {
-		balanceText = "\n• Exchange Balance: $0.00"
+	if apiKeySet && b.exchange != nil {
+		var apiKey models.APIKey
+		err := b.db.QueryRowContext(ctx, `
+			SELECT encrypted_api_key, encrypted_api_secret FROM api_keys
+			WHERE user_id = $1 AND exchange = 'binance' AND is_active = true
+		`, user.ID).Scan(&apiKey.EncryptedAPIKey, &apiKey.EncryptedAPISecret)
+		if err == nil {
+			apiKeyStr, err := auth.Decrypt(apiKey.EncryptedAPIKey)
+			if err == nil {
+				apiSecret, err := auth.Decrypt(apiKey.EncryptedAPISecret)
+				if err == nil {
+					balances, err := b.exchange.GetBalances(ctx, apiKeyStr, apiSecret)
+					if err == nil {
+						// Calculate total USD value
+						var totalUSD decimal.Decimal
+						for asset, balance := range balances {
+							if balance.GreaterThan(decimal.Zero) {
+								if asset == "USDT" || asset == "BUSD" || asset == "USD" {
+									totalUSD = totalUSD.Add(balance)
+								} else {
+									// Get price in USDT
+									price, err := b.exchange.GetPrice(ctx, asset+"USDT")
+									if err == nil {
+										totalUSD = totalUSD.Add(balance.Mul(price))
+									}
+								}
+							}
+						}
+						balanceText = fmt.Sprintf("\n• Exchange Balance: $%s", totalUSD.Round(2).String())
+					}
+				}
+			}
+		}
 	}
 
 	return fmt.Sprintf(`User: %s
@@ -966,10 +999,99 @@ System:
 • Risk Guardian: ✅ Active%s`, firstNameOrUsername(user), autoTrade, user.WCHBalance.String(), balanceText), nil, nil
 }
 
+// syncPortfolioFromExchange syncs user portfolio from exchange to asset_inventory table
+// Nama Function: syncPortfolioFromExchange
+// Deskripsi: Mengambil balance dari exchange dan sync ke tabel asset_inventory.
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk operasi
+//   - user: *models.User — user yang akan di-sync portfolionya
+//
+// Function yang Dipanggil/Dikonsumsi:
+//   - db.QueryRowContext: dipanggil untuk ambil encrypted API key
+//   - auth.Decrypt: dipanggil untuk decrypt API key
+//   - exchange.GetBalances: dipanggil untuk ambil balance dari exchange
+//   - db.ExecContext: dipanggil untuk INSERT ON CONFLICT UPDATE ke asset_inventory
+//
+// Output/Return Value:
+//   - error: error jika sync gagal, nil jika berhasil
+func (b *Bot) syncPortfolioFromExchange(ctx context.Context, user *models.User) error {
+	if b.db == nil || b.exchange == nil {
+		return fmt.Errorf("database or exchange not configured")
+	}
+
+	// Get API key
+	var apiKey, apiSecret string
+	err := b.db.QueryRowContext(ctx, `
+		SELECT encrypted_api_key, encrypted_api_secret FROM api_keys
+		WHERE user_id = $1 AND exchange = 'binance' AND is_active = true
+	`, user.ID).Scan(&apiKey, &apiSecret)
+	if err != nil {
+		return fmt.Errorf("no API key found: %w", err)
+	}
+
+	// Decrypt
+	apiKeyStr, err := auth.Decrypt(apiKey)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt API key: %w", err)
+	}
+	apiSecretStr, err := auth.Decrypt(apiSecret)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt API secret: %w", err)
+	}
+
+	// Get balances from exchange
+	balances, err := b.exchange.GetBalances(ctx, apiKeyStr, apiSecretStr)
+	if err != nil {
+		return fmt.Errorf("failed to get balances: %w", err)
+	}
+
+	// Update asset_inventory for each asset with balance > 0
+	for asset, balance := range balances {
+		if balance.GreaterThan(decimal.Zero) {
+			// Calculate BTC equivalent (simplified - get BTC price)
+			btcEquiv := decimal.Zero
+			if asset != "BTC" {
+				btcPrice, err := b.exchange.GetPrice(ctx, "BTCUSDT")
+				if err == nil && btcPrice.GreaterThan(decimal.Zero) {
+					assetPrice, err := b.exchange.GetPrice(ctx, asset+"USDT")
+					if err == nil && assetPrice.GreaterThan(decimal.Zero) {
+						// asset value in USDT / BTC price = BTC equivalent
+						assetValue := balance.Mul(assetPrice)
+						btcEquiv = assetValue.Div(btcPrice)
+					}
+				}
+			} else {
+				btcEquiv = balance
+			}
+
+			// Insert or update asset_inventory
+			_, err = b.db.ExecContext(ctx, `
+				INSERT INTO asset_inventory (id, user_id, asset, balance, locked_balance, btc_equivalent, updated_at)
+				VALUES ($1, $2, $3, $4, 0, $5, NOW())
+				ON CONFLICT (user_id, asset) DO UPDATE SET
+					balance = EXCLUDED.balance,
+					locked_balance = EXCLUDED.locked_balance,
+					btc_equivalent = EXCLUDED.btc_equivalent,
+					updated_at = EXCLUDED.updated_at
+			`, uuid.New(), user.ID, asset, balance.String(), btcEquiv.String())
+			if err != nil {
+				b.logger.WithError(err).WithField("asset", asset).Warn("Failed to update asset inventory")
+			}
+		}
+	}
+
+	return nil
+}
+
 // buildPortfolioString builds the portfolio string with floating PNL
 func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) string {
 	if b.db == nil {
 		return "📈 BTC: loading...\n📈 ETH: loading...\n📈 SOL: loading..."
+	}
+
+	// Sync portfolio from exchange first
+	if b.exchange != nil {
+		b.syncPortfolioFromExchange(ctx, user)
 	}
 
 	rows, err := b.db.QueryContext(ctx, `
@@ -986,9 +1108,9 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 		if err := rows.Scan(&asset, &balance, &locked); err != nil {
 			continue
 		}
-		
+
 		balDec, _ := decimal.NewFromString(balance)
-		
+
 		floatingStr := ""
 		if balDec.GreaterThan(decimal.Zero) && asset != "BTC" && asset != "USDT" {
 			var quoteAsset string
@@ -997,7 +1119,7 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 				symbol := asset + quoteAsset
 				var avgPrice string
 				err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND symbol = $2 AND side = 'buy' AND status = 'filled'", user.ID, symbol).Scan(&avgPrice)
-				
+
 				if err == nil && avgPrice != "0" {
 					avgPriceDec, _ := decimal.NewFromString(avgPrice)
 					currentPrice, err := b.exchange.GetPrice(ctx, symbol)
