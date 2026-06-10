@@ -1115,15 +1115,19 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 		if balDec.GreaterThan(decimal.Zero) && asset != "BTC" && asset != "USDT" {
 			var quoteAsset string
 			err := b.db.QueryRowContext(ctx, "SELECT quote_asset FROM trading_pairs WHERE user_id = $1 AND base_asset = $2 LIMIT 1", user.ID, asset).Scan(&quoteAsset)
-			if err == nil {
-				symbol := asset + quoteAsset
-				var avgPrice string
-				err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND symbol = $2 AND side = 'buy' AND status = 'filled'", user.ID, symbol).Scan(&avgPrice)
+			if err != nil || quoteAsset == "" {
+				quoteAsset = "BTC"
+			}
 
-				if err == nil && avgPrice != "0" {
-					avgPriceDec, _ := decimal.NewFromString(avgPrice)
+			symbol := asset + quoteAsset
+			var avgPrice string
+			err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND symbol = $2 AND side = 'buy' AND status = 'filled'", user.ID, symbol).Scan(&avgPrice)
+
+			if err == nil && avgPrice != "0" {
+				avgPriceDec, _ := decimal.NewFromString(avgPrice)
+				if avgPriceDec.GreaterThan(decimal.Zero) {
 					currentPrice, err := b.exchange.GetPrice(ctx, symbol)
-					if err == nil && currentPrice.GreaterThan(decimal.Zero) && avgPriceDec.GreaterThan(decimal.Zero) {
+					if err == nil && currentPrice.GreaterThan(decimal.Zero) {
 						floating := currentPrice.Sub(avgPriceDec).Mul(balDec)
 						percent := currentPrice.Sub(avgPriceDec).Div(avgPriceDec).Mul(decimal.NewFromInt(100))
 						sign := "+"
@@ -1132,7 +1136,11 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 						}
 						floatingStr = fmt.Sprintf(" (Float: %s%s %s | %s%.2f%%)", sign, floating.Round(6).String(), quoteAsset, sign, percent.InexactFloat64())
 					}
+				} else {
+					floatingStr = " (Float: N/A)"
 				}
+			} else {
+				floatingStr = " (Float: N/A)"
 			}
 		}
 
