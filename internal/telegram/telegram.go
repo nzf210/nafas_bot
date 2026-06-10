@@ -1123,25 +1123,24 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 			var avgPrice string
 			err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND symbol = $2 AND side = 'buy' AND status = 'filled'", user.ID, symbol).Scan(&avgPrice)
 
-			if err == nil && avgPrice != "0" {
+			// Only show floating if we have valid avgPrice from orders
+			if err == nil && avgPrice != "" && avgPrice != "0" {
 				avgPriceDec, _ := decimal.NewFromString(avgPrice)
 				if avgPriceDec.GreaterThan(decimal.Zero) {
 					currentPrice, err := b.exchange.GetPrice(ctx, symbol)
 					if err == nil && currentPrice.GreaterThan(decimal.Zero) {
-						floating := currentPrice.Sub(avgPriceDec).Mul(balDec)
-						percent := currentPrice.Sub(avgPriceDec).Div(avgPriceDec).Mul(decimal.NewFromInt(100))
+						// Calculate P/L percentage: (currentPrice - avgPrice) / avgPrice * 100
+						priceDiff := currentPrice.Sub(avgPriceDec)
+						percent := priceDiff.Div(avgPriceDec).Mul(decimal.NewFromInt(100))
 						sign := "+"
-						if floating.LessThan(decimal.Zero) {
+						if percent.LessThan(decimal.Zero) {
 							sign = ""
 						}
-						floatingStr = fmt.Sprintf(" (Float: %s%s %s | %s%.2f%%)", sign, floating.Round(6).String(), quoteAsset, sign, percent.InexactFloat64())
+						floatingStr = fmt.Sprintf(" (P/L: %s%.2f%%)", sign, percent.InexactFloat64())
 					}
-				} else {
-					floatingStr = " (Float: N/A)"
 				}
-			} else {
-				floatingStr = " (Float: N/A)"
 			}
+			// If no avgPrice or calculation failed, floatingStr stays empty (no N/A)
 		}
 
 		portfolio = append(portfolio, fmt.Sprintf("📈 %s: %s%s", asset, balDec.Round(6).String(), floatingStr))
