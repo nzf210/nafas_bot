@@ -96,6 +96,10 @@ func Load() (*Config, error) {
 	// Scanner properties
 	c.ScannerCycleInterval, _ = time.ParseDuration(getEnv("SCANNER_CYCLE_INTERVAL", "7m"))
 
+	// AI Decision Cache TTL (max TTL per symbol before AI re-analysis)
+	// Default4 hours — dapat di-set jadi 1h, 4h, 6h, atau sesuai kebutuhan
+	c.AIDecisionCacheMaxTTL, _ = time.ParseDuration(getEnv("AI_DECISION_CACHE_MAX_TTL", "4h"))
+
 	// Max pairs per user
 	c.MaxPairsPerUser, _ = strconv.Atoi(getEnv("MAX_PAIRS_PER_USER", "100"))
 
@@ -152,6 +156,9 @@ type Config struct {
 
 	// Scanner properties
 	ScannerCycleInterval time.Duration
+
+	// AI Decision Cache TTL (max per symbol, adaptive TTL based on confidence)
+	AIDecisionCacheMaxTTL time.Duration
 
 	// AI Trading Thresholds
 	MinConfidenceThreshold float64

@@ -586,7 +586,7 @@ func (o *Orchestrator) preComputeAIDecisions(ctx context.Context, marketData map
 			}
 
 			// Cache the decision with adaptive TTL based on confidence
-			o.cacheDecisionWithTTL(sym, decision, getAdaptiveTTL(decision.Confidence))
+			o.cacheDecisionWithTTL(sym, decision, getAdaptiveTTL(decision.Confidence, o.config.AIDecisionCacheMaxTTL))
 
 			o.logger.WithField("symbol", sym).
 				WithField("decision", decision.TradeDecision).
@@ -647,33 +647,47 @@ func calculateTrend(candles []models.MarketCandle) decimal.Decimal {
 //
 //	Higher confidence → cache lebih lama (mengurangi LLM calls).
 //	Low confidence → refresh lebih sering agar keputusan di-update.
+//	Max TTL diambil dari config (AIDecisionCacheMaxTTL), default 4 hours.
 //
 // Parameter/Value Input:
 //   - confidence: decimal.Decimal — confidence score (0-100) dari AI decision
+//   - maxTTL: time.Duration — max TTL dari config (AIDecisionCacheMaxTTL)
 //
 // Output/Return Value:
 //   - time.Duration: TTL untuk cache entry
-func getAdaptiveTTL(confidence decimal.Decimal) time.Duration {
+func getAdaptiveTTL(confidence decimal.Decimal, maxTTL time.Duration) time.Duration {
 	conf, _ := confidence.Float64()
 	switch {
 	case conf >= 90:
-		return 60 * time.Minute // Very confident → 1 hour
+		return maxTTL                                    // Very confident → max TTL
 	case conf >= 75:
-		return 30 * time.Minute // Fairly confident → 30 min
+		return time.Duration(float64(maxTTL) * 0.5)     // Fairly confident → 50% max TTL
 	case conf >= 60:
-		return 15 * time.Minute // Moderate → 15 min
+		return time.Duration(float64(maxTTL) * 0.25)   // Moderate → 25% max TTL
 	default:
-		return 5 * time.Minute // Low confidence → refresh quickly
+		return time.Duration(float64(maxTTL) * 0.125) // Low confidence → 12.5% max TTL
 	}
 }
 
-// cacheDecision caches a decision with default TTL (60 minutes per pair).
+// cacheDecision caches a decision with max TTL from config.
+// Nama Function: cacheDecision
+// Deskripsi: Menyimpan AI decision ke cache dengan TTL dari config (AIDecisionCacheMaxTTL).
+//
+//	Jika config di-set 4h, maka TTL = 4 hours per pair.
+//	Jika di-set 6h, maka TTL = 6 hours per pair.
+//
+// Parameter/Value Input:
+//   - symbol: string — symbol yang di-cache (e.g. "BTCUSDT")
+//   - decision: *ai.CoordinatorDecision — AI decision yang akan di-cache
+//
+// Output/Return Value:
+//   - Tidak ada return value, modify cache in-place
 func (o *Orchestrator) cacheDecision(symbol string, decision *ai.CoordinatorDecision) {
 	o.decisionCacheMu.Lock()
 	defer o.decisionCacheMu.Unlock()
 	o.decisionCache[symbol] = &decisionCacheEntry{
 		decision: decision,
-		expireAt: time.Now().Add(60 * time.Minute),
+		expireAt: time.Now().Add(o.config.AIDecisionCacheMaxTTL),
 	}
 }
 
