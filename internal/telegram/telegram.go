@@ -1173,66 +1173,8 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 
 		balDec, _ := decimal.NewFromString(balance)
 
-		floatingStr := ""
-		if balDec.GreaterThan(decimal.Zero) && asset != "BTC" && asset != "USDT" {
-			// Get quote asset from trading_pairs (case-insensitive lookup for both base and quote)
-			var quoteAsset string
-			err := b.db.QueryRowContext(ctx, "SELECT UPPER(quote_asset) FROM trading_pairs WHERE user_id = $1 AND LOWER(base_asset) = LOWER($2) LIMIT 1", user.ID, asset).Scan(&quoteAsset)
-			if err != nil || quoteAsset == "" {
-				quoteAsset = "BTC"
-			}
-
-			// Normalize asset to uppercase for symbol building
-			assetUpper := strings.ToUpper(asset)
-			quoteUpper := strings.ToUpper(quoteAsset)
-			
-			// Try multiple symbol formats to find the order
-			symbolFormats := []string{
-				assetUpper + quoteUpper,          // POLBTC (Binance format)
-				assetUpper + "-" + quoteUpper,    // POL-BTC (OKX format)
-				assetUpper + quoteUpper + "USDT",  // POLBTCUSDT (3-letter quote edge case)
-			}
-			
-			var avgPrice string
-			foundSymbol := ""
-			
-			for _, symbol := range symbolFormats {
-				// Query avg price from orders (case-insensitive)
-				err = b.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) FROM orders WHERE user_id = $1 AND LOWER(symbol) = LOWER($2) AND UPPER(side) = 'BUY' AND UPPER(status) = 'FILLED'", user.ID, symbol).Scan(&avgPrice)
-				avgPriceDec, _ := decimal.NewFromString(avgPrice)
-				if err == nil && avgPrice != "" && avgPriceDec.GreaterThan(decimal.Zero) {
-					foundSymbol = symbol
-					break
-				}
-			}
-			
-			// Only show floating if we have valid avgPrice from orders
-			if foundSymbol != "" {
-				avgPriceDec, _ := decimal.NewFromString(avgPrice)
-				if avgPriceDec.GreaterThan(decimal.Zero) {
-					currentPrice, err := b.exchange.GetPrice(ctx, foundSymbol)
-					if err == nil && currentPrice.GreaterThan(decimal.Zero) {
-						// Calculate P/L percentage: (currentPrice - avgPrice) / avgPrice * 100
-						priceDiff := currentPrice.Sub(avgPriceDec)
-						floating := priceDiff.Mul(balDec)
-						percent := priceDiff.Div(avgPriceDec).Mul(decimal.NewFromInt(100))
-						sign := "+"
-						if percent.LessThan(decimal.Zero) {
-							sign = ""
-						}
-						floatingStr = fmt.Sprintf(" (Float: %s%s %s | %s%.2f%%)", sign, floating.Round(6).String(), quoteUpper, sign, percent.InexactFloat64())
-					} else {
-						floatingStr = " (Float: N/A)"
-					}
-				} else {
-					floatingStr = " (Float: N/A)"
-				}
-			} else {
-				floatingStr = " (Float: N/A)"
-			}
-		}
-
-		portfolio = append(portfolio, fmt.Sprintf("📈 %s: %s%s", asset, balDec.Round(6).String(), floatingStr))
+		
+		portfolio = append(portfolio, fmt.Sprintf("📈 %s: %s", asset, balDec.Round(6).String()))
 	}
 
 	if len(portfolio) == 0 {
