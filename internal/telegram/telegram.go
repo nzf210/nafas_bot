@@ -1242,6 +1242,212 @@ func (b *Bot) buildPortfolioString(ctx context.Context, user *models.User) strin
 	return strings.Join(portfolio, "\n")
 }
 
+// buildOpenPositionsPnLString builds P&L string from open BUY positions (unrealized P&L).
+// Nama Function: buildOpenPositionsPnLString
+// Deskripsi: Membuat string P&L dari posisi terbuka (BUY orders yang belum dijual).
+//   Menghitung unrealized P&L berdasarkan avg buy price vs current price dari exchange.
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk operasi database
+//   - user: *models.User — user yang akan dihitung P&L-nya
+// Function yang Dipanggil/Dikonsumsi:
+//   - db.QueryContext: ambil BUY orders dan SELL orders dari tabel orders
+//   - exchange.GetPrice: ambil current price untuk setiap symbol
+// Output/Return Value:
+//   - string: formatted P&L report untuk setiap posisi terbuka
+func (b *Bot) buildOpenPositionsPnLString(ctx context.Context, user *models.User) string {
+	if b.db == nil {
+		return "📊 Open Positions P&L\n\nNo database connection."
+	}
+
+	if b.exchange == nil {
+		return "📊 Open Positions P&L\n\nExchange not configured."
+	}
+
+	// Query total BUY quantity dan weighted average price per symbol
+	buyRows, err := b.db.QueryContext(ctx, `
+		SELECT symbol,
+			   COALESCE(SUM(executed_quantity), 0) as buy_qty,
+			   COALESCE(SUM(price * executed_quantity) / NULLIF(SUM(executed_quantity), 0), 0) as avg_buy_price
+		FROM orders
+		WHERE user_id = $1 AND UPPER(side) = 'BUY' AND UPPER(status) = 'FILLED'
+		GROUP BY symbol
+	`, user.ID)
+	if err != nil {
+		return "📊 Open Positions P&L\n\nNo trading history yet."
+	}
+	defer buyRows.Close()
+
+	// Map untuk menyimpan buy data per symbol
+	type positionData struct {
+		symbol      string
+		buyQty      decimal.Decimal
+		avgBuyPrice decimal.Decimal
+	}
+	var positions []positionData
+
+	for buyRows.Next() {
+		var p positionData
+		var avgBuy string
+		if err := buyRows.Scan(&p.symbol, &p.buyQty, &avgBuy); err != nil {
+			continue
+		}
+		p.avgBuyPrice, _ = decimal.NewFromString(avgBuy)
+		if p.buyQty.GreaterThan(decimal.Zero) && p.avgBuyPrice.GreaterThan(decimal.Zero) {
+			positions = append(positions, p)
+		}
+	}
+	if len(positions) == 0 {
+		return "📊 Open Positions P&L\n\nNo open positions yet.\nStart trading to see your P&L here."
+	}
+
+	// Query total SELL quantity per symbol untuk hitung remaining position
+	sellRows, err := b.db.QueryContext(ctx, `
+		SELECT symbol, COALESCE(SUM(executed_quantity), 0) as sell_qty
+		FROM orders
+		WHERE user_id = $1 AND UPPER(side) = 'SELL' AND UPPER(status) = 'FILLED'
+		GROUP BY symbol
+	`, user.ID)
+	if err != nil {
+		return "📊 Open Positions P&L\n\nError fetching sell data."
+	}
+	defer sellRows.Close()
+
+	// Map untuk sell data
+	sellQtyMap := make(map[string]decimal.Decimal)
+	for sellRows.Next() {
+		var symbol string
+		var sellQty decimal.Decimal
+		if err := sellRows.Scan(&symbol, &sellQty); err != nil {
+			continue
+		}
+		sellQtyMap[symbol] = sellQty
+	}
+
+	// Calculate open positions dan P&L
+	type pnlPosition struct {
+		symbol        string
+		openQty       decimal.Decimal
+		avgBuyPrice   decimal.Decimal
+		currentPrice  decimal.Decimal
+		pnlAmount     decimal.Decimal
+		pnlPercent    decimal.Decimal
+	}
+
+	var pnlPositions []pnlPosition
+	for _, pos := range positions {
+		sellQty := sellQtyMap[pos.symbol]
+		openQty := pos.buyQty.Sub(sellQty)
+
+		// Skip jika tidak ada posisi terbuka (sudah sold all)
+		if !openQty.GreaterThan(decimal.Zero) {
+			continue
+		}
+
+		// Ambil current price dari exchange
+		currentPrice, err := b.exchange.GetPrice(ctx, pos.symbol)
+		if err != nil || !currentPrice.GreaterThan(decimal.Zero) {
+			continue
+		}
+
+		// Hitung unrealized P&L
+		priceDiff := currentPrice.Sub(pos.avgBuyPrice)
+		pnlAmount := priceDiff.Mul(openQty)
+		var pnlPercent decimal.Decimal
+		if pos.avgBuyPrice.GreaterThan(decimal.Zero) {
+			pnlPercent = priceDiff.Div(pos.avgBuyPrice).Mul(decimal.NewFromInt(100))
+		}
+
+		pnlPositions = append(pnlPositions, pnlPosition{
+			symbol:       pos.symbol,
+			openQty:      openQty,
+			avgBuyPrice:  pos.avgBuyPrice,
+			currentPrice: currentPrice,
+			pnlAmount:    pnlAmount,
+			pnlPercent:   pnlPercent,
+		})
+	}
+
+	if len(pnlPositions) == 0 {
+		return "📊 Open Positions P&L\n\nNo open positions.\nAll positions have been closed."
+	}
+
+	// Format output
+	var lines []string
+	var totalPnL decimal.Decimal
+	var profitableCount, losingCount int
+
+	for _, p := range pnlPositions {
+		// Format numbers
+		entryFormatted := formatPrice(p.avgBuyPrice)
+		currentFormatted := formatPrice(p.currentPrice)
+		openQtyFormatted := p.openQty.Round(6).String()
+		pnlAmtStr := formatPnLAmount(p.pnlAmount)
+		pnlPctStr := formatPnLPercent(p.pnlPercent)
+
+		// Determine emoji
+		emoji := "🔴"
+		if p.pnlAmount.GreaterThanOrEqual(decimal.Zero) {
+			emoji = "🟢"
+		}
+
+		lines = append(lines, fmt.Sprintf("%s *%s*\n   Entry: $%s | Current: $%s\n   Qty: %s | P/L: %s (%s)",
+			emoji, p.symbol, entryFormatted, currentFormatted, openQtyFormatted, pnlAmtStr, pnlPctStr))
+
+		totalPnL = totalPnL.Add(p.pnlAmount)
+		if p.pnlAmount.GreaterThanOrEqual(decimal.Zero) {
+			profitableCount++
+		} else {
+			losingCount++
+		}
+	}
+
+	// Summary
+	totalPositions := len(pnlPositions)
+	totalPnLStr := formatPnLAmount(totalPnL)
+	winRate := "0%"
+	if totalPositions > 0 {
+		winRate = fmt.Sprintf("%.0f%%", float64(profitableCount)/float64(totalPositions)*100)
+	}
+
+	summary := fmt.Sprintf("\n*📈 Summary:*\n• Total Positions: %d\n• Total Unrealized P/L: %s\n• Winning: %d | Losing: %d\n• Win Rate: %s",
+		totalPositions, totalPnLStr, profitableCount, losingCount, winRate)
+
+	return "📊 *Open Positions P&L*\n\n" + strings.Join(lines, "\n\n") + summary
+}
+
+// formatPrice formats price untuk display (6 desimal atau kurang jika integer).
+func formatPrice(d decimal.Decimal) string {
+	if d.IsInteger() {
+		return d.Round(0).String()
+	}
+	// Gunakan 2 desimal untuk harga di atas 1, 6 desimal untuk harga kecil
+	if d.GreaterThan(decimal.NewFromInt(1)) {
+		return d.Round(2).String()
+	}
+	return d.Round(6).String()
+}
+
+// formatPnLAmount formats P&L amount dengan sign (+/-) dan simbol $.
+// Nama Function: formatPnLAmount
+// Deskripsi: Format jumlah P&L dengan sign dan simbol mata uang.
+func formatPnLAmount(d decimal.Decimal) string {
+	sign := "+"
+	if d.LessThan(decimal.Zero) {
+		sign = ""
+	}
+	// Round to 2 decimal places for USD values
+	return fmt.Sprintf("%s$%s", sign, d.Round(2).Abs().String())
+}
+
+// formatPnLPercent formats P&L percentage dengan sign (+/-).
+func formatPnLPercent(d decimal.Decimal) string {
+	sign := "+"
+	if d.LessThan(decimal.Zero) {
+		sign = ""
+	}
+	return fmt.Sprintf("%s%s%%", sign, d.Round(2).Abs().String())
+}
+
 // handleSettings handles /settings command
 // Nama Function: handleSettings
 // Deskripsi: Handler untuk command /settings dengan inline keyboard untuk ubah pengaturan.
@@ -1899,12 +2105,11 @@ Show report from last known data.
 *📋 Recent Activity:*
 %s
 
-*💼 Portfolio*
 %s
 
 *🕐 Generated:* %s
 
-Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTitle, totalTrades, completedTrades, winRate, netBTCGrowth, btcAccumulated, recentActivity, b.buildPortfolioString(ctx, user), time.Now().Format("2006-01-02 15:04")), nil, nil
+Gunakan /report weekly atau /report monthly untuk laporan lebih luas.`, reportTitle, totalTrades, completedTrades, winRate, netBTCGrowth, btcAccumulated, recentActivity, b.buildOpenPositionsPnLString(ctx, user), time.Now().Format("2006-01-02 15:04")), nil, nil
 }
 
 // handleSetReport handles /setreport command
