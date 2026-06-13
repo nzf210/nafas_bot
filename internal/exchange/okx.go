@@ -165,7 +165,7 @@ func (c *OKXClient) PlaceOrder(ctx context.Context, apiKey, apiSecret, passphras
 	
 	okxSymbol := c.convertSymbol(order.Symbol)
 	
-	reqBody := map[string]interface{}{
+	reqBody := map[string]any{
 		"instId":  okxSymbol,
 		"tdMode":  "cash",
 		"side":    side,
@@ -316,11 +316,11 @@ func (c *OKXClient) GetOrderStatus(ctx context.Context, apiKey, apiSecret, passp
 }
 
 // CancelOrder cancels an existing order on OKX
-func (c *OKXClient) CancelOrder(ctx context.Context, apiKey, apiSecret, passphrase, orderID, symbol string) error {
+func (c *OKXClient) CancelOrder(ctx context.Context, apiKey, apiSecret, passphrase string, orderID string, symbol string) error {
 	urlStr := fmt.Sprintf("%s/api/v5/trade/cancel-order", c.baseURL)
 	okxSymbol := c.convertSymbol(symbol)
 
-	reqBody := map[string]interface{}{
+	reqBody := map[string]any{
 		"instId": okxSymbol,
 		"ordId":  orderID,
 	}

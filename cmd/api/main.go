@@ -176,20 +176,35 @@ func main() {
 
 	logg.Info("Market scanner and PairManager initialized")
 
-	// Initialize AI Coordinator (Direct LLM - Meridian-style)
-	// Use LLMBaseURL if set, otherwise fall back to LLMProviderURL
-	llmBaseURL := cfg.LLMBaseURL
-	if llmBaseURL == "" {
-		llmBaseURL = cfg.LLMProviderURL
+	// Initialize AI Coordinator (Multi-LLM with Main + Fallback support)
+	// Main LLM: Use LLMBaseURL if set, otherwise fall back to LLMProviderURL
+	mainBaseURL := cfg.LLMBaseURL
+	if mainBaseURL == "" {
+		mainBaseURL = cfg.LLMProviderURL
 	}
-	taClient := ai.NewLLMClient(
-		llmBaseURL,
+
+	// Fallback LLM: Use LLMFallbackBaseURL if set
+	fallbackBaseURL := cfg.LLMFallbackBaseURL
+	if fallbackBaseURL == "" {
+		fallbackBaseURL = cfg.LLMFallbackProviderURL
+	}
+
+	// Create Multi-LLM client with Main + Fallback support
+	taClient := ai.NewMultiLLMClient(
+		// Main LLM config
+		mainBaseURL,
 		cfg.LLMAPIKey,
 		cfg.LLMModel,
-		0.3,  // temperature
-		1024, // max tokens
+		cfg.LLMTemperature,
+		cfg.LLMMaxTokens,
+		// Fallback LLM config
+		fallbackBaseURL,
+		cfg.LLMFallbackAPIKey,
+		cfg.LLMFallbackModel,
+		cfg.LLMTemperature, // reuse same temperature for fallback
+		cfg.LLMMaxTokens,
 	)
-	logg.Info("Direct LLM AI client initialized")
+	logg.Info("Multi-LLM AI client initialized (Main + Fallback)")
 
 	// Initialize Executor
 	_ = execution.NewExecutor(db, binanceClient)
@@ -402,7 +417,7 @@ func balanceHandler(exchange exchange.Exchange) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		json.NewEncoder(w).Encode(map[string]any{
 			"symbol": symbol,
 			"price":  price.String(),
 		})

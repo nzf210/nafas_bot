@@ -61,11 +61,21 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("ENCRYPTION_KEY must be 32 bytes (32 characters)")
 	}
 
-	// LLM
+	// LLM Primary (Main LLM)
 	c.LLMProviderURL = getEnv("LLM_PROVIDER_URL", "https://api.openai.com/v1")
 	c.LLMAPIKey = getEnv("LLM_API_KEY", "")
 	c.LLMModel = getEnv("LLM_MODEL", "gpt-4o")
 	c.LLMBaseURL = getEnv("LLM_BASE_URL", c.LLMProviderURL) // Custom LLM base URL, fallback to provider URL
+
+	// LLM Fallback (Secondary LLM - digunakan jika Main LLM gagal)
+	c.LLMFallbackProviderURL = getEnv("LLM_FALLBACK_PROVIDER_URL", "")
+	c.LLMFallbackAPIKey = getEnv("LLM_FALLBACK_API_KEY", "")
+	c.LLMFallbackModel = getEnv("LLM_FALLBACK_MODEL", "gpt-4o-mini")
+	c.LLMFallbackBaseURL = getEnv("LLM_FALLBACK_BASE_URL", "")
+
+	// LLM Parameters (token optimization)
+	c.LLMTemperature, _ = strconv.ParseFloat(getEnv("LLM_TEMPERATURE", "0.3"), 64)
+	c.LLMMaxTokens, _ = strconv.Atoi(getEnv("LLM_MAX_TOKENS", "1024"))
 
 	// TradingAgents
 	c.TradingAgentsURL = getEnv("TRADING_AGENTS_URL", "http://localhost:8000")
@@ -135,11 +145,21 @@ type Config struct {
 	// Encryption
 	EncryptionKey string
 
-	// LLM
+	// LLM Primary (Main LLM)
 	LLMProviderURL string
 	LLMAPIKey      string
 	LLMModel       string
 	LLMBaseURL     string // Custom LLM base URL (Ollama, LM Studio, dll)
+
+	// LLM Fallback (Secondary LLM - digunakan jika Main LLM gagal)
+	LLMFallbackProviderURL string
+	LLMFallbackAPIKey      string
+	LLMFallbackModel       string
+	LLMFallbackBaseURL     string
+
+	// LLM Parameters (token optimization)
+	LLMTemperature float64
+	LLMMaxTokens    int
 
 	// TradingAgents
 	TradingAgentsURL string

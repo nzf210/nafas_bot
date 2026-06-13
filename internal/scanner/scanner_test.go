@@ -21,6 +21,7 @@ func (m *mockExchange) GetName() string { return m.name }
 func (m *mockExchange) GetBalances(ctx context.Context, apiKey, apiSecret, passphrase string) (map[string]decimal.Decimal, error) { return nil, nil }
 func (m *mockExchange) PlaceOrder(ctx context.Context, apiKey, apiSecret, passphrase string, order models.Order) (*models.Order, error) { return nil, nil }
 func (m *mockExchange) GetOrderStatus(ctx context.Context, apiKey, apiSecret, passphrase string, orderID string, symbol string) (*models.Order, error) { return nil, nil }
+func (m *mockExchange) CancelOrder(ctx context.Context, apiKey, apiSecret, passphrase string, orderID string, symbol string) error { return nil }
 func (m *mockExchange) GetPrice(ctx context.Context, symbol string) (decimal.Decimal, error) { return decimal.NewFromFloat(50000), nil }
 func (m *mockExchange) GetCandles(ctx context.Context, symbol, interval string, limit int) ([]models.MarketCandle, error) {
 	if m.getCandlesFunc != nil {

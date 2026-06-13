@@ -65,7 +65,7 @@ func NewLLMClient(baseURL, apiKey, model string, temperature float64, maxTokens 
 	if maxTokens == 0 {
 		maxTokens = 1024
 	}
-	return&LLMClient{
+	return &LLMClient{
 		baseURL:     baseURL,
 		apiKey:     apiKey,
 		model:      model,
@@ -124,7 +124,7 @@ func (c *LLMClient) HealthCheck(ctx context.Context) (bool, error) {
 // Parameter/Value Input:
 //   - ctx: context.Context — context untuk HTTP request
 //   - symbol: string — trading symbol (e.g., BTCUSDT)
-//   - marketData: map[string]interface{} — market data dari scanner
+//   - marketData: map[string]any — market data dari scanner
 //   - systemPrompt: string — system prompt (unused, prompt built internally)
 // Function yang Dipanggil/Dikonsumsi:
 //   - buildPromptCompact: dipanggil untuk build compact prompt (token-optimized)
@@ -133,7 +133,7 @@ func (c *LLMClient) HealthCheck(ctx context.Context) (bool, error) {
 // Output/Return Value:
 //   - *CoordinatorDecision: keputusan trading dalam format CoordinatorDecision
 //   - error: error jika decision gagal
-func (c *LLMClient) Decide(ctx context.Context, symbol string, marketData map[string]interface{}, systemPrompt string) (*CoordinatorDecision, error) {
+func (c *LLMClient) Decide(ctx context.Context, symbol string, marketData map[string]any, systemPrompt string) (*CoordinatorDecision, error) {
 	log := logger.Default().WithField("module", "ai/llm")
 
 	// Build compact prompt to minimize token usage
@@ -163,7 +163,7 @@ func (c *LLMClient) Decide(ctx context.Context, symbol string, marketData map[st
 
 // buildPromptCompact constructs a compact analysis prompt to minimize token usage.
 // Only last 10 candles are sent, and field names are shortened.
-func (c *LLMClient) buildPromptCompact(symbol string, marketData map[string]interface{}) string {
+func (c *LLMClient) buildPromptCompact(symbol string, marketData map[string]any) string {
 	price := getStringField(marketData, "latest_price", "N/A")
 	volume := getStringField(marketData, "volume_24h", "N/A")
 	rsi := getStringField(marketData, "rsi", "N/A")
@@ -178,8 +178,9 @@ func (c *LLMClient) buildPromptCompact(symbol string, marketData map[string]inte
 
 // compressCandlesToString compresses candles to a compact string format.
 // Only last N candles are included to minimize token usage.
-func compressCandlesToString(candles interface{}, limit int) string {
-	list, ok := candles.([]interface{})
+// Uses scientific notation for large numbers to reduce token usage.
+func compressCandlesToString(candles any, limit int) string {
+	list, ok := candles.([]any)
 	if !ok || len(list) == 0 {
 		return "[]"
 	}
@@ -192,20 +193,49 @@ func compressCandlesToString(candles interface{}, limit int) string {
 
 	var parts []string
 	for i := start; i < len(list); i++ {
-		if candle, ok := list[i].(map[string]interface{}); ok {
-			o := getMapString(candle, "open", "0")
-			h := getMapString(candle, "high", "0")
-			l := getMapString(candle, "low", "0")
-			c := getMapString(candle, "close", "0")
-			v := getMapString(candle, "volume", "0")
+		if candle, ok := list[i].(map[string]any); ok {
+			o := compressNumber(getMapString(candle, "open", "0"))
+			h := compressNumber(getMapString(candle, "high", "0"))
+			l := compressNumber(getMapString(candle, "low", "0"))
+			c := compressNumber(getMapString(candle, "close", "0"))
+			v := compressNumber(getMapString(candle, "volume", "0"))
 			parts = append(parts, fmt.Sprintf("[%s,%s,%s,%s,%s]", o, h, l, c, v))
 		}
 	}
 	return "[" + strings.Join(parts, ",") + "]"
 }
 
+// compressNumber converts large numbers to compact/scientific notation
+// e.g., "1000000" → "1M", "0.00005234" → "5.2e-5"
+func compressNumber(s string) string {
+	// Try to parse as float
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return s
+	}
+
+	// Large numbers: use K/M/B notation
+	if f >= 1e9 {
+		return fmt.Sprintf("%.1fB", f/1e9)
+	}
+	if f >= 1e6 {
+		return fmt.Sprintf("%.1fM", f/1e6)
+	}
+	if f >= 1e3 {
+		return fmt.Sprintf("%.1fK", f/1e3)
+	}
+
+	// Small numbers: use scientific notation
+	if f > 0 && f < 1e-4 {
+		return fmt.Sprintf("%.1e", f)
+	}
+
+	// Regular: limit decimal places
+	return fmt.Sprintf("%.4g", f)
+}
+
 // getMapString safely extracts a string from a map
-func getMapString(m map[string]interface{}, key, fallback string) string {
+func getMapString(m map[string]any, key, fallback string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
@@ -215,71 +245,11 @@ func getMapString(m map[string]interface{}, key, fallback string) string {
 }
 
 // getCandles extracts candles from market data map
-func getCandles(m map[string]interface{}) interface{} {
+func getCandles(m map[string]any) any {
 	if v, ok := m["candles"]; ok {
 		return v
 	}
 	return nil
-}
-
-// buildPrompt constructs the analysis prompt from market data
-// Nama Function: buildPrompt
-// Deskripsi: Membentuk prompt analisis dari market data scanner.
-// Parameter/Value Input:
-//   - symbol: string — trading symbol
-//   - marketData: map[string]interface{} — data dari scanner
-// Output/Return Value:
-//   - string: formatted prompt untuk LLM
-func (c *LLMClient) buildPrompt(symbol string, marketData map[string]interface{}) string {
-	// Extract market data fields
-	latestPrice := getStringField(marketData, "latest_price", "N/A")
-	volume24h := getStringField(marketData, "volume_24h", "N/A")
-	interval := getStringField(marketData, "interval", "1h")
-	rsi := getStringField(marketData, "rsi", "N/A")
-	signalStrength := getStringField(marketData, "signal_strength", "N/A")
-
-	// Build candles info if available
-	candlesInfo := ""
-	if candles, ok := marketData["candles"]; ok {
-		if candleList, ok := candles.([]interface{}); ok && len(candleList) > 0 {
-			candlesInfo = fmt.Sprintf(" (%d candles available for analysis)", len(candleList))
-		}
-	}
-
-	return fmt.Sprintf(`You are an AI trading analyst for NAFAS (Native Asset Focused Accumulation System).
-Your role: Analyze market data and provide a trading decision for: %s
-
-Current Market Data:
-- Symbol: %s
-- Latest Price: %s
-- 24h Volume: %s
-- Timeframe: %s
-- RSI: %s
-- Signal Strength: %s%s
-
-Analysis Requirements:
-1. Analyze the price action, volume, and technical indicators
-2. Consider the current market regime (bull/bear/crab)
-3. Provide a clear BUY, SELL, or HOLD decision
-4. Include confidence score (0-100)
-5. Provide stop-loss percentage (for BUY/SELL only)
-6. Provide take-profit targets (for BUY/SELL only)
-
-Response Format (JSON only, no additional text):
-{
-  "action": "BUY|SELL|HOLD",
-  "confidence": 0-100,
-  "reasoning": "brief explanation",
-  "stop_loss": 0.0-10.0,
-  "take_profit_targets": [1.0, 2.0, 3.0],
-  "risk_level": "low|medium|high|extreme"
-}
-
-Important:
-- HOLD is the default when conditions are unclear
-- Lower confidence = more conservative position sizing
-- Stop-loss should be 1-3%% for short-term trades
-- Only recommend BUY/SELL if confidence >= 70`, symbol, symbol, latestPrice, volume24h, interval, rsi, signalStrength, candlesInfo)
 }
 
 // callLLM sends request to LLM provider with retry logic
@@ -293,13 +263,13 @@ Important:
 //   - string: LLM response text
 //   - error: error jika semua retry gagal
 func (c *LLMClient) callLLM(ctx context.Context, prompt string) (string, error) {
-	requestBody := map[string]interface{}{
+	requestBody := map[string]any{
 		"model": c.model,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
 		"temperature": c.temperature,
-		"max_tokens":  c.maxTokens,
+		"max_tokens":  256, // Optimized: response is simple JSON, no need for 1024+
 	}
 
 	requestJSON, err := json.Marshal(requestBody)
@@ -309,7 +279,7 @@ func (c *LLMClient) callLLM(ctx context.Context, prompt string) (string, error) 
 
 	// Retry logic (up to 3 attempts)
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			wait := time.Duration(attempt*5000) * time.Millisecond
 			time.Sleep(wait)
@@ -533,7 +503,7 @@ func extractJSON(text string) string {
 }
 
 // getStringField safely extracts a string field from map
-func getStringField(m map[string]interface{}, key, fallback string) string {
+func getStringField(m map[string]any, key, fallback string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
@@ -543,9 +513,8 @@ func getStringField(m map[string]interface{}, key, fallback string) string {
 }
 
 // AIClient adalah interface untuk AI decision client
-// Bisa diimplementasi oleh LLMClient (direct call) atau TradingAgentsClient (service call)
+// Bisa diimplementasi oleh LLMClient (direct call), MultiLLMClient (main+fallback), atau TradingAgentsClient (service call)
 type AIClient interface {
-	Decide(ctx context.Context, symbol string, marketData map[string]interface{}, systemPrompt string) (*CoordinatorDecision, error)
+	Decide(ctx context.Context, symbol string, marketData map[string]any, systemPrompt string) (*CoordinatorDecision, error)
 	HealthCheck(ctx context.Context) (bool, error)
 }
-

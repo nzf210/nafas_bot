@@ -94,6 +94,7 @@ func (c *BinanceClient) FixQuantity(symbol string, qty decimal.Decimal) decimal.
 //   - GetBalances: mengambil semua balance
 //   - PlaceOrder: menempatkan order
 //   - GetOrderStatus: mengambil status order
+//   - CancelOrder: membatalkan order
 //   - GetCandles: mengambil data candle OHLCV
 //
 // Output/Return Value:
@@ -103,6 +104,7 @@ type Exchange interface {
 	GetBalances(ctx context.Context, apiKey, apiSecret, passphrase string) (map[string]decimal.Decimal, error)
 	PlaceOrder(ctx context.Context, apiKey, apiSecret, passphrase string, order models.Order) (*models.Order, error)
 	GetOrderStatus(ctx context.Context, apiKey, apiSecret, passphrase string, orderID string, symbol string) (*models.Order, error)
+	CancelOrder(ctx context.Context, apiKey, apiSecret, passphrase string, orderID string, symbol string) error
 	GetPrice(ctx context.Context, symbol string) (decimal.Decimal, error)
 	GetTicker(ctx context.Context, symbol string) (*models.MarketSnapshot, error)
 	GetCandles(ctx context.Context, symbol, interval string, limit int) ([]models.MarketCandle, error)
@@ -702,4 +704,50 @@ func mapBinanceStatus(status string) string {
 		return mapped
 	}
 	return status
+}
+
+// CancelOrder cancels an order on Binance
+// Nama Function: CancelOrder
+// Deskripsi: Membatalkan order yang masih pending di Binance.
+// Parameter/Value Input:
+//   - ctx: context.Context — context untuk HTTP request
+//   - apiKey, apiSecret, passphrase: string — kredensial user
+//   - orderID: string — exchange order ID yang akan dibatalkan
+//   - symbol: string — symbol trading
+//
+// Function yang Dipanggil/Dikonsumsi:
+//   - c.signRequest: dipanggil untuk sign request
+//   - httpClient.Do: dipanggil untuk kirim cancel request ke Binance
+//
+// Output/Return Value:
+//   - error: error jika cancel gagal
+func (c *BinanceClient) CancelOrder(ctx context.Context, apiKey, apiSecret, passphrase string, orderID string, symbol string) error {
+	timestamp := time.Now().UnixMilli()
+	params := fmt.Sprintf("symbol=%s&orderId=%s&timestamp=%d&recvWindow=5000", symbol, orderID, timestamp)
+	signature := c.signRequest(params, apiSecret)
+
+	url := fmt.Sprintf("%s/api/v3/order?%s&signature=%s", c.baseURL, params, signature)
+
+	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create cancel request: %w", err)
+	}
+	req.Header.Set("X-MBX-APIKEY", apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to cancel order: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("binance cancel order error: %s", string(body))
+	}
+
+	c.logger.WithField("symbol", symbol).
+		WithField("order_id", orderID).
+		Info("Order cancelled successfully on Binance")
+
+	return nil
 }
