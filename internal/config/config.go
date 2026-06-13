@@ -216,7 +216,7 @@ var PresetConfigs = map[string]TradingModePreset{
 		MinConfidenceThreshold:  90,            // High confidence required
 		MaxRiskLevel:            "low",          // Only low risk
 		MinVolatilityPercent:    1.0,           // Only volatile coins
-		MinVolume24h:            500000, // High volume requirement
+		MinVolume24h:            500,  // BTC volume (high volume requirement)
 	},
 	"moderate": {
 		Name:                     "moderate",
@@ -227,7 +227,7 @@ var PresetConfigs = map[string]TradingModePreset{
 		MinConfidenceThreshold:  85,            // Standard confidence
 		MaxRiskLevel:            "medium",      // Allow medium risk
 		MinVolatilityPercent:    0.5,           // Standard volatility
-		MinVolume24h:            100000,        // Standard volume
+		MinVolume24h:            100,  // BTC volume (standard volume)
 	},
 	"aggressive": {
 		Name:                     "aggressive",
@@ -238,7 +238,7 @@ var PresetConfigs = map[string]TradingModePreset{
 		MinConfidenceThreshold:  70,            // Lower confidence threshold
 		MaxRiskLevel:            "high",        // Allow high risk
 		MinVolatilityPercent:    0.2,           // Lower volatility filter
-		MinVolume24h:            50000,         // Lower volume requirement
+		MinVolume24h:            50,   // BTC volume (lower volume requirement)
 	},
 }
 

@@ -572,7 +572,9 @@ func (c *BinanceClient) GetTicker(ctx context.Context, symbol string) (*models.M
 	}
 
 	price, _ := decimal.NewFromString(ticker.Price)
-	volume, _ := decimal.NewFromString(ticker.QuoteVolume)
+	quoteVolume, _ := decimal.NewFromString(ticker.QuoteVolume)
+		// Convert to BTC volume: QuoteVolume (USDT) / LastPrice = BTC volume
+		volume := quoteVolume.Div(price)
 
 	return &models.MarketSnapshot{
 		Symbol:    ticker.Symbol,
